@@ -4,9 +4,12 @@
 Instagram DMs into the D365 agent workspace via Direct Line API 3.0 ("bring your own channel"),
 forked from Microsoft's reference connector.
 
-> **Status: bootstrap / not yet built.** This folder currently holds the implementation plan and
-> the context it needs. The .NET solution is created by **build step 1** (fork the MS sample). See
-> the plan.
+> **Status: dev-grade bridge built (plan steps 1–3 done).** The MS sample is forked in, migrated to
+> **net8.0**, and the MessageBird adapter has been replaced with an **Instagram adapter** (inbound
+> signature-verify + payload→Activity map, outbound Activity→IG Send API, plus the GET webhook-verify
+> endpoint). Builds clean; all tests pass. Remaining steps (Azure deploy, Meta app, D365 channel,
+> dev-mode test, App Review — plan steps 4–7, 9) are **portal/credential** work Chris drives. See the
+> per-step ownership table in [`CLAUDE.md`](CLAUDE.md).
 
 ## Start here
 
@@ -30,9 +33,59 @@ docs/
   d365-cc-context.md                         ← where this fits in AWD's wider D365 programme
 ```
 
-The .NET solution (`src/` etc.) does not exist yet — **the first build step is to fork Microsoft's
-sample into this folder** and start replacing the MessageBird adapter with an Instagram adapter.
-See `CLAUDE.md` → "First moves".
+The .NET solution lives at the repo root (`Microsoft.OmniChannel.Connector.Sample.sln`). The
+Instagram adapter is the project we wrote; everything else is forked from Microsoft's sample:
+
+```
+Microsoft.OmniChannel.Connector.Sample.sln            ← open this in Visual Studio
+Directory.Build.props · NuGet.config                  ← repo-wide net8 build settings + nuget.org feed
+Libraries/
+  Microsoft.OmniChannel.Adapter.Builder/              ← IAdapterBuilder, ChannelType, ActivityExtension (sample)
+  Adapters/
+    Microsoft.OmniChannel.Adapters.Instagram/         ← OUR adapter (verify + map + Send API)
+    Microsoft.OmniChannel.Adapters.Line/              ← sample's LINE adapter, left intact
+Microsoft.OmniChannel.MessageRelayProcessor/          ← Direct Line client + watermark polling (sample)
+Microsoft.OmniChannel.Adaptors.Service/               ← ASP.NET Core host; Controllers/InstagramAdapterController.cs
+Tests/                                                ← xunit; Instagram helper + controller tests
+```
+
+## Build & run locally
+
+```powershell
+dotnet build Microsoft.OmniChannel.Connector.Sample.sln     # or open the .sln in Visual Studio
+dotnet test  Microsoft.OmniChannel.Connector.Sample.sln
+dotnet run --project Microsoft.OmniChannel.Adaptors.Service  # serves the webhook
+```
+
+The webhook (both Meta's GET verification handshake and POST events) is at:
+
+```
+/api/InstagramAdapter/postactivityasync
+```
+
+Expose it to Meta with ngrok during dev-mode testing (`ngrok http <port>`), then register the
+HTTPS forwarding URL + verify token in the Meta app's webhook settings (plan step 5, Chris).
+
+## Configuration & secrets
+
+Settings bind from the `InstagramAdapterSettings` / `RelayProcessorSettings` sections of
+`appsettings.json` (which holds **placeholders only** — never commit real secrets):
+
+| Setting | What it is |
+|---|---|
+| `InstagramAdapterSettings:AppSecret` | Meta app secret — validates the inbound `X-Hub-Signature-256` |
+| `InstagramAdapterSettings:VerifyToken` | Token echoed in Meta's GET webhook handshake |
+| `InstagramAdapterSettings:PageAccessToken` | Long-lived Page/IG token for the Send API |
+| `InstagramAdapterSettings:IgBusinessId` | IG-business / Page id; path of `POST /{id}/messages` |
+| `InstagramAdapterSettings:GraphApiVersion` | e.g. `v21.0` (optional) |
+| `InstagramAdapterSettings:UseHumanAgentTag` | `true` to tag replies HUMAN_AGENT (7-day window) |
+| `RelayProcessorSettings:DirectLineSecret` | Direct Line secret from the D365 custom channel |
+| `RelayProcessorSettings:BotHandle` | Direct Line bot handle |
+
+For **local** real values, override without touching `appsettings.json` via environment variables
+(double-underscore = section nesting), e.g. `setx InstagramAdapterSettings__AppSecret "…"`, or use
+`dotnet user-secrets`. In **production** these come from **Key Vault / Function app settings**
+(plan step 4, Chris).
 
 ## The split: code vs portals
 

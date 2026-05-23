@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 
 namespace Microsoft.OmniChannel.Adapter.Builder
 {
@@ -13,8 +13,8 @@ namespace Microsoft.OmniChannel.Adapter.Builder
         public const string Line = "line";
 
         /// <summary>
-        /// Message Bird
+        /// Instagram Direct. Also surfaced to D365 as the Activity channelData.channelType.
         /// </summary>
-        public const string MessageBird = "messageBird";
+        public const string Instagram = "Instagram";
     }
 }

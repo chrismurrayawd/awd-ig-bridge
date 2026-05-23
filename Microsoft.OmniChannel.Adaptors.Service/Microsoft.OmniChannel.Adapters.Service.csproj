@@ -13,7 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Microsoft.OmniChannel.MessageRelayProcessor\Microsoft.OmniChannel.MessageRelayProcessor.csproj" />
     <ProjectReference Include="..\Libraries\Adapters\Microsoft.OmniChannel.Adapters.Line\Microsoft.OmniChannel.Adapters.Line.csproj" />
-    <ProjectReference Include="..\Libraries\Adapters\Microsoft.OmniChannel.Adapters.MessageBird\Microsoft.OmniChannel.Adapters.MessageBird.csproj" />
+    <ProjectReference Include="..\Libraries\Adapters\Microsoft.OmniChannel.Adapters.Instagram\Microsoft.OmniChannel.Adapters.Instagram.csproj" />
     <ProjectReference Include="..\Libraries\Microsoft.OmniChannel.Adapter.Builder\Microsoft.OmniChannel.Adapter.Builder.csproj" />
   </ItemGroup>
 

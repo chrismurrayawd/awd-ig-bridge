@@ -4,8 +4,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.OmniChannel.Adapter.Builder;
+using Microsoft.OmniChannel.Adapters.Instagram;
 using Microsoft.OmniChannel.Adapters.Line;
-using Microsoft.OmniChannel.Adapters.MessageBird;
 using Microsoft.OmniChannel.MessageRelayProcessor;
 using Newtonsoft.Json.Serialization;
 using NLog.Extensions.Logging;
@@ -58,11 +58,11 @@ namespace Microsoft.OmniChannel.Adapters.Service
                 });
 
             services.Configure<LineAdapterConfiguration>(configuration.GetSection("LineAdapterSettings"));
-            services.Configure<MessageBirdAdapterConfiguration>(configuration.GetSection("MessageBirdAdapterSettings"));
+            services.Configure<InstagramAdapterConfiguration>(configuration.GetSection("InstagramAdapterSettings"));
             services.Configure<RelayProcessorConfiguration>(configuration.GetSection("RelayProcessorSettings"));
 
             services.AddSingleton<LineAdapter>();
-            services.AddSingleton<MessageBirdAdapter>();
+            services.AddSingleton<InstagramAdapter>();
             services.AddTransient<IRelayProcessor, RelayProcessor>();
 
             services.AddSingleton<AdapterServiceResolver>(serviceProvider => key =>
@@ -71,8 +71,8 @@ namespace Microsoft.OmniChannel.Adapters.Service
                 {
                     case ChannelType.Line:
                         return serviceProvider.GetService<LineAdapter>();
-                    case ChannelType.MessageBird:
-                        return serviceProvider.GetService<MessageBirdAdapter>();
+                    case ChannelType.Instagram:
+                        return serviceProvider.GetService<InstagramAdapter>();
                     default:
                         throw new KeyNotFoundException();
                 }
