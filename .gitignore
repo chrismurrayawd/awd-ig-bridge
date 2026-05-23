@@ -1,0 +1,53 @@
+# --- Secrets — never commit ---
+local.settings.json
+appsettings.*.local.json
+*.user
+*.pubxml
+*.pubxml.user
+.env
+.env.*
+secrets.json
+
+# --- .NET build output ---
+bin/
+obj/
+out/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+*.dll
+*.exe
+*.pdb
+
+# --- Azure Functions local artefacts ---
+.azurefunctions/
+azure-functions-core-tools/
+__azurite_db*__.json
+__blobstorage__/
+__queuestorage__/
+
+# --- Tooling / IDE ---
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.suo
+*.userprefs
+.idea/
+
+# --- NuGet ---
+*.nupkg
+.nuget/
+packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log

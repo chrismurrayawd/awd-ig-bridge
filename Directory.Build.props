@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Repo-wide build settings for the forked Microsoft "bring your own channel" sample,
+    migrated from netcoreapp2.1/2.2 to net8.0.
+
+    The original sample shipped StyleCop + legacy FxCop analyzers wired to a custom
+    ruleset (Microsoft.OmniChannel.Connector.ruleset). Those analyzer packages predate
+    .NET 8 and only produce style noise, so analyzer execution is disabled repo-wide
+    rather than deleting every PackageReference. Behaviour is unchanged.
+  -->
+  <PropertyGroup>
+    <RunAnalyzers>false</RunAnalyzers>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- SYSLIB0006: Thread.Abort obsolete · CS1591: missing XML doc · NU1701: package restored via fallback TFM -->
+    <NoWarn>$(NoWarn);SYSLIB0006;CS1591;NU1701</NoWarn>
+  </PropertyGroup>
+
+</Project>
