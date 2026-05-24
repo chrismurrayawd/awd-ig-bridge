@@ -59,11 +59,16 @@ no App Review.
   time, irreversible once submitted). Confirmed 2026-05-23.
 - ✅ **Dev-grade now, harden later** (step 8). Confirmed 2026-05-23.
 - ✅ **Human-first routing** by default for the D365 workstream (mirror WhatsApp/FB); not bridge code.
-- ⏳ **OPEN — Web API vs Azure Function host.** The code as built is an **ASP.NET Core Web API**
-  (net8.0), but CLAUDE.md/README describe an *Azure Function*. App Service hosting needs **zero code
-  change**; Functions hosting is a code port. **Settle this before the Meta webhook wiring** so the
-  public URL shape is final. (Recommendation: App Service for the trial; revisit Functions at step 8 if
-  wanted.) See `docs/azure-deploy-notes.md` §2.
+- ✅ **Host = Linux App Service** (resolved 2026-05-24). The fork is an ASP.NET Core Web API, which App
+  Service hosts with zero code change; Azure Functions would need a port and isn't used. See
+  `docs/azure-deploy-notes.md`.
+- ✅ **Azure infra standardised** (2026-05-24): subscription `95b2f141-b4c6-4e9c-8d69-254c5be3baf9`
+  (Core Benefits Credits); **reuse RG `awd-contactcenter-rg`** (no separate IG RG); deploy via explicit
+  `dotnet publish` → `Compress-Archive` → `az webapp deploy --type zip`.
+- ✅ **Deploy-now is GET-verify-only on purpose** (2026-05-24): the D365 custom-channel step that issues
+  the Direct Line secret is blocked (Contact Center env mid-reprovision after trial→production), so
+  `RelayProcessorSettings__DirectLineSecret` + the Meta token stay placeholders; `VerifyToken` is set so
+  Meta's webhook handshake verifies. Full DM round-trip lights up once the Direct Line secret exists.
 
 ## Build/run quickstart
 
