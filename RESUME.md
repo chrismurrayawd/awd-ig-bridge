@@ -1,14 +1,29 @@
 # RESUME — IG → D365 Contact Center bridge
 
-**Parked 2026-05-23.** Plan code steps **1–3 are done**; the remaining steps are portal/credential
-work Chris drives in a focused session. Pick up here.
+**Updated 2026-05-24.** Code steps **1–3 done**; **deployed to Azure App Service** (step 4, partial —
+GET-verify live, full round-trip pending the Direct Line secret). Remaining steps are portal/credential
+work Chris drives. Pick up here.
+
+## Live deployment (step 4)
+
+| | |
+|---|---|
+| Public URL | **https://awd-ig-bridge.azurewebsites.net** |
+| Webhook endpoint | **https://awd-ig-bridge.azurewebsites.net/api/InstagramAdapter/postactivityasync** |
+| Host | Linux App Service `awd-ig-bridge`, plan `awd-ig-bridge-plan` (B1), **UK South** |
+| Resource group | `awd-contactcenter-rg` (metadata region SE Asia — cosmetic; resources are uksouth/global) |
+| Subscription | Core Benefits Credits `95b2f141-b4c6-4e9c-8d69-254c5be3baf9` |
+| Verify token | set as app-setting `InstagramAdapterSettings__VerifyToken` (value shared with Chris directly — **not committed**) |
+| Verified live | GET valid→challenge/200, wrong-token→403, unsigned POST→403, empty→400 |
+| Pending app-settings | `RelayProcessorSettings__DirectLineSecret` + `BotHandle` (D365 step 6), Meta `AppSecret`/`PageAccessToken`/`IgBusinessId` (step 5) — currently placeholders |
 
 ## Where the code is
 
 | | |
 |---|---|
 | Branch | `main` |
-| HEAD commit | **`e096540`** (`e096540505543cc4566720732bc32275cb183ab7`) — "Step 2-3: replace MessageBird adapter with Instagram adapter + config wiring" |
+| HEAD commit | see `git log` (latest doc/deploy commits on top of the step 1–3 work) |
+| Step 2–3 commit | `e096540` — "Step 2-3: replace MessageBird adapter with Instagram adapter + config wiring" |
 | Baseline commit | `89219f8` — "Baseline: fork MS 'bring your own channel' sample, migrated to net8.0" |
 | Build | `dotnet build` clean (0 warnings/errors); `dotnet test` = **20 passing** |
 | Webhook path | `/api/InstagramAdapter/postactivityasync` (GET = Meta verify, POST = events) |
@@ -41,7 +56,7 @@ Two prep docs are committed to make these faster:
 
 | Step | What | Owner |
 |---|---|---|
-| 4 | Deploy to Azure; get public webhook URL; wire Key Vault | Chris |
+| 4 | ✅ Deployed to App Service (UK South); GET-verify live. Remaining: wire real secrets to Key Vault once they exist | done (Claude) / Chris |
 | 5 | Meta: dedicated app, webhook + IG perms + Testers | Chris |
 | 6 | D365: custom Direct Line channel + workstream → human queue (yields the **Direct Line secret** for `RelayProcessorSettings`) | Chris |
 | 7 | Dev-mode test: Tester DMs the IG account → lands in agent workspace, reply returns to IG | Chris + Lachy |

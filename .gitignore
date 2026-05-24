@@ -12,6 +12,8 @@ secrets.json
 bin/
 obj/
 out/
+publish/
+publish.zip
 [Dd]ebug/
 [Rr]elease/
 x64/

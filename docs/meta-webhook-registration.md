@@ -19,7 +19,7 @@ bridge has a public HTTPS URL (step 4 / ngrok) so the verification handshake can
 - Admin on the IG account + linked FB Page; Business Admin in the AWD business portfolio
   (`Alloy Wheels Direct`, `605826456988689`).
 - Bridge deployed with a reachable **HTTPS** webhook URL (step 4):
-  `https://<host>/api/InstagramAdapter/postactivityasync`.
+  `https://awd-ig-bridge.azurewebsites.net/api/InstagramAdapter/postactivityasync` (live).
 
 ---
 
@@ -65,7 +65,7 @@ bridge has a public HTTPS URL (step 4 / ngrok) so the verification handshake can
 
 1. App dashboard → **Webhooks** (or Instagram product → Configure webhooks).
 2. **Object = Instagram.** Add a callback:
-   - **Callback URL:** `https://<host>/api/InstagramAdapter/postactivityasync`
+   - **Callback URL:** `https://awd-ig-bridge.azurewebsites.net/api/InstagramAdapter/postactivityasync`
    - **Verify token:** the exact string you set as `InstagramAdapterSettings:VerifyToken`. Meta sends a
      GET with `hub.mode=subscribe&hub.verify_token=…&hub.challenge=…`; the bridge echoes the challenge
      when the token matches → **"verified"** tick. (If it fails: confirm the app is running, the URL is
@@ -107,4 +107,4 @@ bridge has a public HTTPS URL (step 4 / ngrok) so the verification handshake can
 | System User / Page access token | `InstagramAdapterSettings:PageAccessToken` |
 | IG business account id | `InstagramAdapterSettings:IgBusinessId` |
 | Graph API version (e.g. v21.0) | `InstagramAdapterSettings:GraphApiVersion` |
-| Callback URL | `https://<host>/api/InstagramAdapter/postactivityasync` |
+| Callback URL | `https://awd-ig-bridge.azurewebsites.net/api/InstagramAdapter/postactivityasync` |
