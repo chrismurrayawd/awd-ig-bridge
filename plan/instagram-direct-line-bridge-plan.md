@@ -26,7 +26,7 @@ agent reply  ◀──IG Send API──┘  ◀───────────
 2. **Instagram channel adapter** (`IAdapterBuilder`):
    - **Inbound:** verify the Meta `X-Hub-Signature-256` against the app secret → map the IG message payload to a Bot Framework `Activity` (`from.id` = IGSID, `text`, `channelData.channelType="Instagram"`, optional `conversationcontext`/`customercontext`). Activity payload **≤28 KB**.
    - **Outbound:** convert the agent's reply `Activity` → Instagram **Send API** call (`POST /<IG_BUSINESS_ID>/messages` with `recipient.id` = IGSID).
-3. **Message relay processor** — Direct Line client keyed by user IGSID; starts a Direct Line conversation, polls activities by **watermark** until `endOfConversation`. Needs the **Direct Line secret** from the D365 custom channel.
+3. **Message relay processor** — Direct Line client keyed by user IGSID; starts a Direct Line conversation, polls activities by **watermark** until `endOfConversation`, relaying back activities whose `from.id == BotHandle`. Needs the **Direct Line secret** + **bot handle** from the **Azure Bot's Direct Line channel** (see "D365 wiring topology" below — it is *Azure-Bot-first*, not D365-issued).
 
 ## Prerequisites
 
@@ -42,18 +42,22 @@ agent reply  ◀──IG Send API──┘  ◀───────────
 - **Key Vault** for secrets (Direct Line secret, IG token, app secret, webhook verify token).
 - **Application Insights** for logging/observability.
 
-**D365 side**
-- **Custom messaging channel** (Direct Line) in Copilot Service admin center → Channels → Messaging → Custom; gives the **Direct Line secret** + channel config.
+**Azure Bot + D365 side** — *Azure-Bot-first* (corrected 2026-05-25; D365 does **not** mint the Direct Line secret):
+- **Azure Bot** resource (name = **`BotHandle`**) + **Entra app registration** (app ID + client secret + tenant ID).
+- **Direct Line** channel on that Azure Bot → yields the **Direct Line secret** (+ the bot handle).
+- **D365 "Add Custom account"** (Copilot Service admin center → Channels → Messaging → Custom) consumes the Entra **app ID + client secret + tenant ID**; its **Callback information** exposes the D365 inbound endpoint.
+- Point the **Azure Bot's messaging endpoint** at that D365 inbound endpoint.
 - **Workstream** (Inbound/Messaging/Custom) → route to a **human queue** (no bot — mirror the AWD WhatsApp/Facebook pattern), unless we decide to front it with the Phase-2 deflection bot.
+- The bridge consumes only `DirectLineSecret` + `BotHandle`; the Entra app ID/secret/tenant are D365↔Bot wiring, **not** bridge config.
 
 ## Build steps (ordered)
 
 1. Fork the MS sample; get it building locally.
 2. Implement the **Instagram adapter** (inbound verify+map, outbound Send API). Add the `GET` webhook-verify endpoint.
 3. Config: Direct Line secret, IG token, app secret, verify token (via Key Vault / app settings).
-4. Deploy to the **Azure Function**; note the public webhook URL.
+4. Deploy to **Azure App Service** (the fork is an ASP.NET Core Web API, not a Function); note the public webhook URL. ✅ done — `https://awd-ig-bridge.azurewebsites.net`.
 5. **Meta:** register the webhook URL + subscribe to IG messaging events; add the IG permissions (Standard Access works for **app Testers** in dev mode — no App Review needed to test).
-6. **D365:** create the custom channel (Direct Line) + workstream → human queue.
+6. **Azure Bot + D365:** create the Azure Bot (+ Entra app) and its **Direct Line** channel → set `DirectLineSecret` + `BotHandle`; add the **D365 custom account** (consumes the Entra app creds) + workstream → human queue; point the Azure Bot's messaging endpoint at the D365 callback endpoint.
 7. **Dev-mode test:** Chris/Lachy (as app Testers) DM the IG account → confirm it lands in the agent workspace and the agent reply returns to Instagram.
 8. **Hardening for prod** (the sample explicitly is *not* reliability/scale-hardened): replace the in-memory active-conversation dict + polling thread with a durable store (e.g. Azure Table/Service Bus) and retry/backoff; handle token refresh; handle attachments/story-reply payload shapes.
 9. **App Review (Live mode):** submit `instagram_manage_messages` + `instagram_basic` for review **after the in-flight FB review clears** (Meta does whole-app review, one submission at a time). Screencast + reviewer instructions, same shape as the FB submission. ~10-day queue.

@@ -98,16 +98,17 @@ Public host becomes `https://awd-ig-bridge-<uniq>.azurewebsites.net`.
 
 ### 2.1 App settings for the deploy-now / GET-verify-only phase
 
-The D365 custom-channel step (which issues the Direct Line secret) is **blocked** — the Contact Center
-environment is mid-reprovision after a trial→production conversion, so the secret can't be issued yet.
-So for now:
+The **Azure Bot's Direct Line channel** (which issues the Direct Line secret) doesn't exist yet — the
+D365/Contact Center side is mid-reprovision after a trial→production conversion (it's *Azure-Bot-first*:
+you create the Azure Bot + Direct Line channel, then D365 consumes the Entra app creds — see the plan's
+"Azure Bot + D365 side"). So for now:
 
 - `InstagramAdapterSettings__VerifyToken` → set to a **real shared value now** (so Meta's webhook
   handshake verifies). It's a handshake nonce, not a credential. The live value is in `RESUME.md`.
 - `InstagramAdapterSettings__AppSecret`, `InstagramAdapterSettings__PageAccessToken`,
   `InstagramAdapterSettings__IgBusinessId` → set when the Meta dedicated app exists (step 5).
 - `RelayProcessorSettings__DirectLineSecret`, `RelayProcessorSettings__BotHandle` → **placeholders**
-  until D365 step 6 issues them.
+  until the Azure Bot + its Direct Line channel are created (step 6).
 
 ```powershell
 az webapp config appsettings set -n awd-ig-bridge-<uniq> -g awd-contactcenter-rg --settings `
@@ -121,38 +122,57 @@ unsigned POSTs. What doesn't yet: the full DM round-trip (needs the Direct Line 
 
 ---
 
-## 3. Secrets → Key Vault → app settings (when real secrets exist)
+## 3. Production configuration — exact key list (secret vs non-secret)
 
-Once the Meta app + D365 channel issue real values, move them to Key Vault and reference them from app
-settings (the app sees the resolved value; `__` = config nesting).
+`__` = config-section nesting. **Only three values are secrets** → store in Key Vault and bind via
+Key Vault references. The rest are plain app settings. (`appsettings.json` in the repo stays
+placeholders-only regardless.)
+
+**Secrets → Key Vault:**
 
 ```powershell
 az keyvault create -n awd-ig-bridge-kv -g awd-contactcenter-rg -l uksouth
-az keyvault secret set --vault-name awd-ig-bridge-kv -n MetaAppSecret      --value "…"
-az keyvault secret set --vault-name awd-ig-bridge-kv -n WebhookVerifyToken --value "…"
-az keyvault secret set --vault-name awd-ig-bridge-kv -n IgPageAccessToken  --value "…"
-az keyvault secret set --vault-name awd-ig-bridge-kv -n IgBusinessId       --value "…"
-az keyvault secret set --vault-name awd-ig-bridge-kv -n DirectLineSecret   --value "…"
-az keyvault secret set --vault-name awd-ig-bridge-kv -n BotHandle          --value "…"
+az keyvault secret set --vault-name awd-ig-bridge-kv -n DirectLineSecret  --value "<from Azure Bot -> Channels -> Direct Line>"
+az keyvault secret set --vault-name awd-ig-bridge-kv -n MetaAppSecret     --value "<Meta app -> Settings -> Basic>"
+az keyvault secret set --vault-name awd-ig-bridge-kv -n IgPageAccessToken --value "<System User / Page token>"
 
 # Grant the web app's managed identity read access
 $kvId = az keyvault show -n awd-ig-bridge-kv -g awd-contactcenter-rg --query id -o tsv
-$pid  = az webapp identity show -n awd-ig-bridge-<uniq> -g awd-contactcenter-rg --query principalId -o tsv
+$pid  = az webapp identity show -n awd-ig-bridge -g awd-contactcenter-rg --query principalId -o tsv
 az role assignment create --assignee $pid --role "Key Vault Secrets User" --scope $kvId
 ```
 
-| App setting (config key) | Value | Maps to |
-|---|---|---|
-| `InstagramAdapterSettings__AppSecret`       | `@Microsoft.KeyVault(SecretUri=https://awd-ig-bridge-kv.vault.azure.net/secrets/MetaAppSecret/)` | validates `X-Hub-Signature-256` |
-| `InstagramAdapterSettings__VerifyToken`     | `@Microsoft.KeyVault(SecretUri=…/secrets/WebhookVerifyToken/)` | GET handshake |
-| `InstagramAdapterSettings__PageAccessToken` | `@Microsoft.KeyVault(SecretUri=…/secrets/IgPageAccessToken/)`  | Send API |
-| `InstagramAdapterSettings__IgBusinessId`    | `@Microsoft.KeyVault(SecretUri=…/secrets/IgBusinessId/)`       | `/{id}/messages` path |
-| `InstagramAdapterSettings__GraphApiVersion` | `v21.0` (plain) | Graph version |
-| `InstagramAdapterSettings__UseHumanAgentTag`| `false` (plain) | HUMAN_AGENT 7-day window |
-| `RelayProcessorSettings__DirectLineSecret`  | `@Microsoft.KeyVault(SecretUri=…/secrets/DirectLineSecret/)`   | D365 custom channel (step 6) |
-| `RelayProcessorSettings__BotHandle`         | `@Microsoft.KeyVault(SecretUri=…/secrets/BotHandle/)`          | Direct Line bot handle |
-| `RelayProcessorSettings__PollingIntervalInMilliseconds` | `2000` (plain) | polling cadence |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING`     | from the App Insights resource | telemetry |
+| App setting (config key) | Secret? | Value | Source / meaning |
+|---|---|---|---|
+| `RelayProcessorSettings__DirectLineSecret` | 🔒 **secret** | `@Microsoft.KeyVault(SecretUri=https://awd-ig-bridge-kv.vault.azure.net/secrets/DirectLineSecret/)` | **Azure Bot → Channels → Direct Line** |
+| `InstagramAdapterSettings__AppSecret` | 🔒 **secret** | `@Microsoft.KeyVault(SecretUri=…/secrets/MetaAppSecret/)` | Meta app secret — validates `X-Hub-Signature-256` |
+| `InstagramAdapterSettings__PageAccessToken` | 🔒 **secret** | `@Microsoft.KeyVault(SecretUri=…/secrets/IgPageAccessToken/)` | IG/Page Send API token (System User preferred) |
+| `RelayProcessorSettings__BotHandle` | plain | `<azure-bot-handle>` | the Azure Bot's id; relay matches `from.id == BotHandle` |
+| `RelayProcessorSettings__PollingIntervalInMilliseconds` | plain | `2000` | Direct Line poll cadence |
+| `InstagramAdapterSettings__VerifyToken` | plain | `<chosen handshake token>` | Meta GET webhook handshake |
+| `InstagramAdapterSettings__IgBusinessId` | plain | `<ig business account id>` | `/{id}/messages` Send API path |
+| `InstagramAdapterSettings__GraphApiVersion` | plain | `v21.0` | Graph API version |
+| `InstagramAdapterSettings__UseHumanAgentTag` | plain | `false` | HUMAN_AGENT 7-day window |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | plain (ops) | from the App Insights resource | telemetry |
+
+Set the non-secret ones directly:
+
+```powershell
+az webapp config appsettings set -n awd-ig-bridge -g awd-contactcenter-rg --settings `
+  "RelayProcessorSettings__BotHandle=<azure-bot-handle>" `
+  "RelayProcessorSettings__PollingIntervalInMilliseconds=2000" `
+  "InstagramAdapterSettings__VerifyToken=<chosen handshake token>" `
+  "InstagramAdapterSettings__IgBusinessId=<ig business account id>" `
+  "InstagramAdapterSettings__GraphApiVersion=v21.0" `
+  "InstagramAdapterSettings__UseHumanAgentTag=false"
+```
+
+> **`BotHandle` must equal the Azure Bot's outbound `from.id`** as it appears on Direct Line activities —
+> the relay only forwards activities where `from.id == BotHandle` (RelayProcessor.cs). If it doesn't match,
+> agent replies are silently dropped. Verify during the step-7 dev test (log a polled activity's `From.Id`).
+>
+> The Entra **app ID / client secret / tenant ID** are consumed by **D365 ↔ Azure Bot**, *not* the bridge —
+> they are not bridge app settings.
 
 > `appsettings.json` in the repo holds **placeholders only** and stays that way. App settings override
 > the JSON at runtime.

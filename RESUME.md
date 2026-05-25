@@ -15,7 +15,7 @@ work Chris drives. Pick up here.
 | Subscription | Core Benefits Credits `95b2f141-b4c6-4e9c-8d69-254c5be3baf9` |
 | Verify token | set as app-setting `InstagramAdapterSettings__VerifyToken` (value shared with Chris directly — **not committed**) |
 | Verified live | GET valid→challenge/200, wrong-token→403, unsigned POST→403, empty→400 |
-| Pending app-settings | `RelayProcessorSettings__DirectLineSecret` + `BotHandle` (D365 step 6), Meta `AppSecret`/`PageAccessToken`/`IgBusinessId` (step 5) — currently placeholders |
+| Pending app-settings | `RelayProcessorSettings__DirectLineSecret` (🔒) + `BotHandle` (from the **Azure Bot** / its Direct Line channel, step 6), Meta `AppSecret`/`PageAccessToken`/`IgBusinessId` (step 5) — currently placeholders. Exact key list + secret/non-secret split in `docs/azure-deploy-notes.md` §3 |
 
 ## Where the code is
 
@@ -58,7 +58,7 @@ Two prep docs are committed to make these faster:
 |---|---|---|
 | 4 | ✅ Deployed to App Service (UK South); GET-verify live. Remaining: wire real secrets to Key Vault once they exist | done (Claude) / Chris |
 | 5 | Meta: dedicated app, webhook + IG perms + Testers | Chris |
-| 6 | D365: custom Direct Line channel + workstream → human queue (yields the **Direct Line secret** for `RelayProcessorSettings`) | Chris |
+| 6 | **Azure Bot** (+ Entra app) → its **Direct Line channel** yields `DirectLineSecret` + `BotHandle`; **D365 custom account** consumes the Entra app creds; point the bot's messaging endpoint at the D365 callback; workstream → human queue | Chris |
 | 7 | Dev-mode test: Tester DMs the IG account → lands in agent workspace, reply returns to IG | Chris + Lachy |
 | 8 | Prod hardening (durable state, retries, token refresh) | Claude Code (later) |
 | 9 | App Review (Live mode) — **after FB review clears** | Chris |
@@ -80,10 +80,16 @@ no App Review.
 - ✅ **Azure infra standardised** (2026-05-24): subscription `95b2f141-b4c6-4e9c-8d69-254c5be3baf9`
   (Core Benefits Credits); **reuse RG `awd-contactcenter-rg`** (no separate IG RG); deploy via explicit
   `dotnet publish` → `Compress-Archive` → `az webapp deploy --type zip`.
-- ✅ **Deploy-now is GET-verify-only on purpose** (2026-05-24): the D365 custom-channel step that issues
-  the Direct Line secret is blocked (Contact Center env mid-reprovision after trial→production), so
-  `RelayProcessorSettings__DirectLineSecret` + the Meta token stay placeholders; `VerifyToken` is set so
-  Meta's webhook handshake verifies. Full DM round-trip lights up once the Direct Line secret exists.
+- ✅ **Deploy-now is GET-verify-only on purpose** (2026-05-24): the **Azure Bot + Direct Line channel**
+  that issues the Direct Line secret doesn't exist yet (the D365/Contact Center side is mid-reprovision
+  after trial→production), so `RelayProcessorSettings__DirectLineSecret` + the Meta token stay
+  placeholders; `VerifyToken` is set so Meta's webhook handshake verifies. Full DM round-trip lights up
+  once the Direct Line secret exists.
+- ✅ **D365 wiring is Azure-Bot-first** (corrected 2026-05-25): D365 does **not** mint the Direct Line
+  secret — you create an Azure Bot (name = `BotHandle`) + Entra app + Direct Line channel (→ secret), and
+  D365's custom account consumes the Entra app creds. **Bridge code needs no change — config-only.** The
+  Entra app ID/secret/tenant are D365↔Bot wiring, not bridge settings. See `CLAUDE.md` → "D365 wiring
+  topology" and `plan` → "Azure Bot + D365 side".
 
 ## Build/run quickstart
 

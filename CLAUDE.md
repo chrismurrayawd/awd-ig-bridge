@@ -46,10 +46,30 @@ That plan is the spec. Read it first, in full.
    - **Outbound:** convert the agent reply `Activity` → Instagram **Send API** call
      (`POST /<IG_BUSINESS_ID>/messages`, `recipient.id` = IGSID).
 3. **Message relay processor** — Direct Line client keyed by IGSID; starts a Direct Line
-   conversation, polls activities by **watermark** until `endOfConversation`. Needs the
-   **Direct Line secret** from the D365 custom channel.
+   conversation, polls activities by **watermark** until `endOfConversation`, and relays back the
+   activities whose `from.id` equals **`BotHandle`**. Needs the **Direct Line secret** + **bot handle**
+   from the **Azure Bot's Direct Line channel** (see topology below).
 
 **You only write component 2 (the Instagram adapter).** Components 1 and 3 come from the sample.
+
+### D365 wiring topology — Azure-Bot-first (corrected 2026-05-25)
+
+D365 Contact Center's "Custom channel → Direct Line" flow is **Azure-first** — D365 does **not** mint
+the Direct Line secret. The chain is:
+
+1. Create an **Azure Bot** resource (its name = **`BotHandle`**) backed by an **Entra app registration**
+   (app ID + client secret + tenant ID).
+2. Add a **Direct Line** channel to that Azure Bot → this yields the **Direct Line secret**.
+3. In D365 (Copilot Service admin center → **Add Custom account**), supply the Entra **app ID + client
+   secret + tenant ID**. D365's **Callback information** then exposes a D365 inbound endpoint.
+4. Point the **Azure Bot's messaging endpoint** at that D365 inbound endpoint.
+
+So inbound IG message → bridge posts to the Azure Bot's Direct Line → Azure Bot forwards to its
+messaging endpoint (= D365) → agent workspace. Agent reply travels back the same path; the bridge polls
+the Direct Line conversation and relays activities where `from.id == BotHandle` out to Instagram.
+
+**The bridge only needs `DirectLineSecret` + `BotHandle`.** The Entra app ID / client secret / tenant ID
+are consumed by **D365 ↔ Azure Bot**, not by the bridge — they are *not* bridge configuration.
 
 ## Context docs (read before building)
 
@@ -95,9 +115,9 @@ The build splits into **code** (autonomous, do it here) and **portal/credential*
 | Plan step | Type | Who |
 |---|---|---|
 | 1–3 Fork + Instagram adapter + config wiring | **Code** | Claude Code (here) |
-| 4 Deploy to Azure Function; get public webhook URL | Portal / Azure CLI | Chris (credentials) |
+| 4 Deploy to Azure App Service; get public webhook URL | Portal / Azure CLI | ✅ done (App Service `awd-ig-bridge`) |
 | 5 Meta: dedicated app, webhook subscription, IG permissions, Testers | Meta dev console | Chris |
-| 6 D365: custom Direct Line channel + workstream → queue | D365 Copilot Service admin center | Chris |
+| 6 Azure Bot (Direct Line channel) + Entra app → D365 custom account + workstream → queue | Azure + D365 Copilot Service admin center | Chris |
 | 7 Dev-mode test (Tester DMs the IG account) | Manual / Playwright | Chris + Lachy |
 | 8 Prod hardening (durable state + retries + token refresh) | **Code** | Claude Code (here) |
 | 9 App Review (Live mode) — **after FB review clears** | Meta submission | Chris |
@@ -107,8 +127,8 @@ The build splits into **code** (autonomous, do it here) and **portal/credential*
 - **Subscription:** Core Benefits Credits sub `95b2f141-…` (the $2,400/yr Azure credit, expires
   2027-03-26). Small Function + Key Vault + App Insights ≈ a few £/mo — well inside the credit.
 - **Resource group:** e.g. `awd-contactcenter-rg`. **Region:** UK South (data residency; fallback West Europe).
-- **Secrets in Key Vault:** Direct Line secret (from the D365 custom channel), IG/Page access token
-  (System User token preferred — non-expiry), Meta app secret, webhook verify token.
+- **Secrets in Key Vault:** Direct Line secret (from the **Azure Bot's Direct Line channel**), IG/Page
+  access token (System User token preferred — non-expiry), Meta app secret, webhook verify token.
 - **Application Insights** for logging/observability.
 
 ## Sign in as
