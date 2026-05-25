@@ -96,16 +96,16 @@ are consumed by **D365 ↔ Azure Bot**, not by the bridge — they are *not* bri
 
 ## Open decisions — resolve before the code that depends on them
 
-These are still open on the plan. Get Chris's call before building the dependent piece:
-
 1. **Human-first vs deflection bot (plan #2):** route the D365 workstream to a **human queue**
    (mirror the AWD WhatsApp/Facebook pattern) or front it with the Phase-3 deflection bot from
    day one? **Default = human-first.** This is a D365 *workstream-config* choice, not bridge code —
    it does not block the adapter build.
-2. **Prod-hardening scope (plan #4):** ship the **dev-grade** bridge (sample's in-memory
-   conversation dict + polling thread) for the Tester trial, then harden later (plan step 8) — or
-   build the durable-store/retry/token-refresh version up front? **Default = dev-grade now**, harden
-   after the flow is proven. This *does* change the code you write, so settle it first.
+2. ~~**Prod-hardening scope (plan #4)**~~ **RESOLVED 2026-05-25 — defer.** Ship the **dev-grade**
+   bridge (in-memory conversation dict + polling thread) for the Testers trial; implement plan step 8
+   (durable store + retry/backoff + token refresh) *after* the dev-mode round-trip is proven and
+   *before* Live-mode customer traffic (step 9). Known dev-grade gaps held until then: process restart
+   drops active conversations, no retry on transient Direct Line/Send failures, dead token breaks
+   outbound silently, stale conversations linger if D365 doesn't emit `EndOfConversation`.
 
 ## What needs Chris (interactive — not autonomous)
 

@@ -72,7 +72,9 @@ no App Review.
 - ✅ **Dedicated Meta app for IG — NOT the FB Messenger app `27031932926443539`.** Keeps IG's App
   Review clock independent of the in-flight FB review (Meta does whole-app review, one submission at a
   time, irreversible once submitted). Confirmed 2026-05-23.
-- ✅ **Dev-grade now, harden later** (step 8). Confirmed 2026-05-23.
+- ✅ **Dev-grade now, harden later** (step 8). Confirmed 2026-05-23; **re-confirmed 2026-05-25 (defer)** —
+  harden after the dev-mode round-trip is proven, before Live-mode traffic. Known dev-grade gaps:
+  restart drops in-memory conversations, no transient retry, dead token breaks outbound silently.
 - ✅ **Human-first routing** by default for the D365 workstream (mirror WhatsApp/FB); not bridge code.
 - ✅ **Host = Linux App Service** (resolved 2026-05-24). The fork is an ASP.NET Core Web API, which App
   Service hosts with zero code change; Azure Functions would need a port and isn't used. See
