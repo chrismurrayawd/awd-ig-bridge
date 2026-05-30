@@ -1,6 +1,6 @@
 # RESUME — IG → D365 Contact Center bridge
 
-## ✅ Current state (2026-05-30) — LIVE in production
+## ✅ Current state (2026-05-31) — LIVE in production; P1 + P2 hardening DONE
 
 The bridge is **live and serving real customer Instagram DMs in both directions** (inbound IG → D365
 agent workspace; agent reply → IG), on the Linux App Service **`awd-ig-bridge`**. It runs under Meta
@@ -11,25 +11,62 @@ Access, and no Tech Provider are needed** (do NOT submit App Review / do NOT bec
 sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
 `https://awd-ig-bridge.azurewebsites.net/api/InstagramAdapter/postactivityasync`.
 
+### ✅ Done 2026-05-30/31 — P1 (token refresh + Key Vault) and P2 (observability)
+
+- **P1 — Instagram-user token auto-refresh + durable Key Vault persistence: LIVE & VERIFIED.** The
+  ~60-day IGAA token deadline (~late July 2026) is **eliminated** — a background refresher slides the token
+  forward and persists it to Key Vault, so restarts no longer lose it. Secret `IgUserAccessToken` exists in
+  vault **`awd-ig-bridge-kv`** (created 2026-05-30, expires 2026-07-29; ~60-day window tracked via the
+  secret's ExpiresOn). App uses `KeyVaultInstagramTokenStore` via the App Service **system-assigned managed
+  identity** (principalId `b3429ddd-895d-4cc3-9ade-21313ecfb644`), granted secret get/set/list (vault is
+  access-policy mode, RBAC off).
+- **P2 — Observability: LIVE.** App Insights **`awd-ig-bridge-ai`** (workspace `awd-ig-bridge-law`) created
+  and wired (`APPLICATIONINSIGHTS_CONNECTION_STRING` set). Structured/queryable logging added, including the
+  fix to the previously-silent outbound-failure path. Query:
+  `az monitor app-insights query --app awd-ig-bridge-ai -g awd-contactcenter-rg --analytics-query "traces | order by timestamp desc | take 50"`.
+- **Diagnostic endpoint** `GET /api/TokenHealth?token=<VerifyToken>` deployed — store type / load result /
+  MSI probe / token lengths+expiry (NO secret values). It cracked the root cause below.
+- **Root cause of the long KV struggle (proven):** the App Service had **no managed identity injected**
+  (`IDENTITY_ENDPOINT` env var absent) after earlier `az webapp identity remove/assign` churn, so
+  `DefaultAzureCredential` couldn't reach Key Vault. Re-assigning the identity + granting the vault policy
+  fixed it (TokenHealth `msiProbeStatus: 200`).
+
 **Live Azure app settings** (`awd-ig-bridge` — values live in App Service config / Key Vault, never in git):
 
 | Setting | Value |
 |---|---|
 | `InstagramAdapterSettings__AppSecret` | **Instagram** app secret (app `1493427132185394`) — validates inbound `X-Hub-Signature-256` |
-| `InstagramAdapterSettings__PageAccessToken` | **Instagram-user token** (`IGAA…`, ~60-day) — outbound Send API on `graph.instagram.com` |
+| `InstagramAdapterSettings__PageAccessToken` | **Instagram-user token** (`IGAA…`) — **safety-net only now; KV is authoritative.** Delete when satisfied (see ▶ tomorrow) |
 | `InstagramAdapterSettings__IgBusinessId` | `17841440469975661` |
-| `InstagramAdapterSettings__VerifyToken` | set (Meta GET webhook handshake) |
+| `InstagramAdapterSettings__VerifyToken` | set (Meta GET webhook handshake; also gates `/api/TokenHealth`) |
 | `InstagramAdapterSettings__GraphApiVersion` | `v21.0` |
+| `InstagramAdapterSettings__TokenSecretName` | `IgUserAccessToken` (KV secret name) |
+| `KeyVault__Uri` | `https://awd-ig-bridge-kv.vault.azure.net/` (set → KeyVault store active; delete → reverts to config-fallback) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | set (App Insights `awd-ig-bridge-ai`) |
 | `RelayProcessorSettings__DirectLineSecret` | set (from the Azure Bot's Direct Line channel) |
 | `RelayProcessorSettings__BotHandle` | `awd-instagram-bot` |
 
-**▶ In flight now — prod hardening (plan step 8).** Spec: [`docs/hardening-prompt.md`](docs/hardening-prompt.md);
-phased plan: [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md). Priority order:
+### ▶ RESUME TOMORROW
 
-- **P1 — Instagram-user token auto-refresh.** ⏰ **HARD DEADLINE ~late July 2026** — `PageAccessToken` was
-  generated 2026-05-30 and expires ~60 days later; when it lapses, **outbound silently breaks**. Building now.
-- **P2** observability (App Insights + structured logs) · **P3** durable conversation store (replace the
-  in-memory cache + polling thread) · **P4** richer attachment/story handling · **P5** secret hygiene (rotate + Key Vault).
+1. **(optional) Drop the plaintext token safety-net** now KV is authoritative:
+   `az webapp config appsettings delete -n awd-ig-bridge -g awd-contactcenter-rg --setting-names InstagramAdapterSettings__PageAccessToken`.
+   (Revert KV anytime by deleting `KeyVault__Uri` → config-fallback store.)
+2. **Remove or tighten `/api/TokenHealth`** — it was a diagnostic; gated by VerifyToken and leaks no secret
+   values, but worth removing now KV is finished (delete `TokenHealthController.cs` + redeploy).
+3. **Tidy stale vault access policies** — earlier identity principalIds (`2983d974…`, `ce252f3f…`) still have
+   policies on `awd-ig-bridge-kv`; only `b3429ddd…` (current MI) is needed.
+4. **Remaining hardening:** **P3** durable conversation store (replace in-memory cache + polling thread) ·
+   **P4** richer attachment/story handling · **P5** broader secret rotation (AppSecret/DirectLineSecret → KV).
+
+**Commits (all on `origin/main`; deployed build = `df706c8`):** `b72eba4` P1 token refresh ·
+`a7c6f9b` nlog Console-logging fix · `0798de2` `/api/TokenHealth` diagnostic · `df706c8` P2 App Insights +
+structured logging. (Azure app config — `KeyVault__Uri`, AI conn string, managed identity — is NOT in git.)
+
+**Deploy/diagnostic gotchas (don't relearn):** build the deploy zip with **git-bash `tar` from inside
+`publish/`** (`cd publish && tar -a -cf ../publish.zip *`) and verify `tar -tf publish.zip | wc -l` (~68) — a
+**PowerShell-built zip came out empty → `az webapp deploy` 502**. git-bash mangles `/subscriptions/...` az args
+(prefixes `C:/Program Files/Git/...`) → `export MSYS2_ARG_CONV_EXCL='*'` or use PowerShell. `az webapp log tail`
+and the Kudu API (401) don't work for this app — use **App Insights** or **`/api/TokenHealth`** instead.
 
 > The dated session log below is kept for diagnostics. It predates this header — some of its
 > "pending / blocked / placeholder" notes are **superseded** by the live state above.

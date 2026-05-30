@@ -1,8 +1,14 @@
 # Prod-hardening (plan step 8) — phased implementation plan
 
-**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status:** in flight (started 2026-05-30)
+**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-05-31):** ✅ **P1 + P2 DONE & deployed** · P3–P5 remaining.
 **Context:** the bridge is LIVE in production (see [`RESUME.md`](../RESUME.md) → *Current state*). It was built
 dev-grade on purpose; this plan hardens it. Built **P1-first** because P1 has a hard external deadline.
+
+> **Progress:** **P1 (token auto-refresh + Key Vault persistence) and P2 (App Insights + structured logging)
+> are deployed and verified in production** (deployed build `df706c8`). Test count is now **44** (was 20).
+> Remaining: P3 (durable conversation store), P4 (attachments/stories), P5 (broader secret rotation).
+> See [`RESUME.md`](../RESUME.md) → *Done 2026-05-30/31* for the live Azure resources, the root-cause writeup
+> (missing managed-identity injection), and the deploy/diagnostic gotchas.
 
 > **Build order:** **P1 standalone and committed first** (token-expiry deadline ~late July 2026), then P2 → P3 →
 > P4 → P5 fold in. Every phase keeps `dotnet test` green and adds tests for new behaviour. Deploys happen only on
@@ -22,7 +28,12 @@ dev-grade on purpose; this plan hardens it. Built **P1-first** because P1 has a 
 
 ---
 
-## P1 — Instagram-user token auto-refresh ⏰ HARD DEADLINE ~late July 2026
+## P1 — Instagram-user token auto-refresh ✅ DONE 2026-05-31 (was: HARD DEADLINE ~late July 2026 — now eliminated)
+
+> **DONE & LIVE.** Implemented as designed below: background refresher + provider-fed outbound + durable Key
+> Vault store via the App Service managed identity. Verified in prod (secret `IgUserAccessToken` in
+> `awd-ig-bridge-kv`, expires 2026-07-29; TokenHealth `storeType=KeyVaultInstagramTokenStore, storeGet=ok,
+> msiProbeStatus=200`). The original design notes below stand as the as-built record.
 
 **Problem.** `InstagramAdapterSettings:PageAccessToken` is an Instagram-user token (`IGAA…`) that **expires ~60 days**
 after generation (2026-05-30). The outbound Send API (`graph.instagram.com/{ver}/{IgBusinessId}/messages?access_token=…`)
@@ -104,7 +115,12 @@ app setting), outbound still works, and a refresh failure is **logged/alerted** 
 
 ---
 
-## P2 — Observability (Application Insights + structured logging)
+## P2 — Observability (Application Insights + structured logging) ✅ DONE 2026-05-31
+
+> **DONE & LIVE.** App Insights `awd-ig-bridge-ai` wired (`APPLICATIONINSIGHTS_CONNECTION_STRING` set);
+> AddApplicationInsightsTelemetry + logging provider; structured/queryable logs for webhook verify, signature
+> pass/fail, inbound accept, and the previously-silent outbound-failure path (now ILogger.Error). The
+> `/api/TokenHealth` diagnostic endpoint was also added. Notes below stand as the as-built record.
 - Add `builder.Services.AddApplicationInsightsTelemetry()` + `APPLICATIONINSIGHTS_CONNECTION_STRING`.
 - Structured, queryable logs for: inbound webhook received; **signature pass/fail** (today only the 403
   `LogWarning("postactivityasync rejected")`); payload→activity counts; relay→Direct Line result; **outbound Send-API
