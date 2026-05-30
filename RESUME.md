@@ -1,6 +1,6 @@
 # RESUME — IG → D365 Contact Center bridge
 
-**Updated 2026-05-30 (session 3) — ✅ ROUND-TRIP COMPLETE. Inbound AND outbound both working end-to-end.**
+**Updated 2026-05-30 (session 3) — ✅ ROUND-TRIP COMPLETE + ✅ PRODUCTION-READY. Inbound AND outbound work end-to-end, AND the bridge serves REAL (non-Tester) customers under STANDARD access — so NO App Review, NO Advanced Access, NO Tech Provider is needed. Empirically confirmed 2026-05-30: a non-Tester IG account DM'd @alloywheelsdirect → open D365 conversation + agent reply delivered back. The dashboard's "become a Tech Provider" gate (irreversible-sounding) is for apps accessing OTHER businesses' accounts; AWD is first-party (own account) → Standard Access is sufficient per Meta's Instagram-platform docs. DO NOT submit App Review / DO NOT become a Tech Provider. Bridge can launch as-is.**
 
 ## ✅ COMPLETE 2026-05-30 (session 3) — full Instagram ↔ D365 round-trip is LIVE
 
