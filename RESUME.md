@@ -1,5 +1,43 @@
 # RESUME — IG → D365 Contact Center bridge
 
+## ✅ Current state (2026-05-30) — LIVE in production
+
+The bridge is **live and serving real customer Instagram DMs in both directions** (inbound IG → D365
+agent workspace; agent reply → IG), on the Linux App Service **`awd-ig-bridge`**. It runs under Meta
+**Standard Access** as a first-party app on AWD's own Instagram account — **no App Review, no Advanced
+Access, and no Tech Provider are needed** (do NOT submit App Review / do NOT become a Tech Provider).
+
+**Host:** ASP.NET Core Web API on **Linux Azure App Service `awd-ig-bridge`** (RG `awd-contactcenter-rg`,
+sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
+`https://awd-ig-bridge.azurewebsites.net/api/InstagramAdapter/postactivityasync`.
+
+**Live Azure app settings** (`awd-ig-bridge` — values live in App Service config / Key Vault, never in git):
+
+| Setting | Value |
+|---|---|
+| `InstagramAdapterSettings__AppSecret` | **Instagram** app secret (app `1493427132185394`) — validates inbound `X-Hub-Signature-256` |
+| `InstagramAdapterSettings__PageAccessToken` | **Instagram-user token** (`IGAA…`, ~60-day) — outbound Send API on `graph.instagram.com` |
+| `InstagramAdapterSettings__IgBusinessId` | `17841440469975661` |
+| `InstagramAdapterSettings__VerifyToken` | set (Meta GET webhook handshake) |
+| `InstagramAdapterSettings__GraphApiVersion` | `v21.0` |
+| `RelayProcessorSettings__DirectLineSecret` | set (from the Azure Bot's Direct Line channel) |
+| `RelayProcessorSettings__BotHandle` | `awd-instagram-bot` |
+
+**▶ In flight now — prod hardening (plan step 8).** Spec: [`docs/hardening-prompt.md`](docs/hardening-prompt.md);
+phased plan: [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md). Priority order:
+
+- **P1 — Instagram-user token auto-refresh.** ⏰ **HARD DEADLINE ~late July 2026** — `PageAccessToken` was
+  generated 2026-05-30 and expires ~60 days later; when it lapses, **outbound silently breaks**. Building now.
+- **P2** observability (App Insights + structured logs) · **P3** durable conversation store (replace the
+  in-memory cache + polling thread) · **P4** richer attachment/story handling · **P5** secret hygiene (rotate + Key Vault).
+
+> The dated session log below is kept for diagnostics. It predates this header — some of its
+> "pending / blocked / placeholder" notes are **superseded** by the live state above.
+
+---
+
+## Session log (history)
+
 **Updated 2026-05-30 (session 3) — ✅ ROUND-TRIP COMPLETE + ✅ PRODUCTION-READY. Inbound AND outbound work end-to-end, AND the bridge serves REAL (non-Tester) customers under STANDARD access — so NO App Review, NO Advanced Access, NO Tech Provider is needed. Empirically confirmed 2026-05-30: a non-Tester IG account DM'd @alloywheelsdirect → open D365 conversation + agent reply delivered back. The dashboard's "become a Tech Provider" gate (irreversible-sounding) is for apps accessing OTHER businesses' accounts; AWD is first-party (own account) → Standard Access is sufficient per Meta's Instagram-platform docs. DO NOT submit App Review / DO NOT become a Tech Provider. Bridge can launch as-is.**
 
 ## ✅ COMPLETE 2026-05-30 (session 3) — full Instagram ↔ D365 round-trip is LIVE
@@ -154,7 +192,7 @@ ACS resource diagnostics on `awd-cc-voice-acs` stay empty for the Teams-Phone-ro
 | Subscription | Core Benefits Credits `95b2f141-b4c6-4e9c-8d69-254c5be3baf9` |
 | Verify token | set as app-setting `InstagramAdapterSettings__VerifyToken` (value shared with Chris directly — **not committed**) |
 | Verified live | GET valid→challenge/200, wrong-token→403, unsigned POST→403, empty→400 |
-| Pending app-settings | `RelayProcessorSettings__DirectLineSecret` (🔒) + `BotHandle` (from the **Azure Bot** / its Direct Line channel, step 6), Meta `AppSecret`/`PageAccessToken`/`IgBusinessId` (step 5) — currently placeholders. Exact key list + secret/non-secret split in `docs/azure-deploy-notes.md` §3 |
+| App-settings (all live ✅) | `RelayProcessorSettings__DirectLineSecret` (🔒) + `BotHandle` (from the **Azure Bot** / its Direct Line channel, step 6), Meta `AppSecret`/`PageAccessToken`/`IgBusinessId` (step 5) — all set & live as of 2026-05-30 (see **Current state** header; values in App Service config, never committed). Exact key list + secret/non-secret split in `docs/azure-deploy-notes.md` §3 |
 
 ## Where the code is
 
@@ -211,7 +249,7 @@ no App Review.
 - ✅ **Dedicated Meta app for IG — NOT the FB Messenger app `27031932926443539`.** Keeps IG's App
   Review clock independent of the in-flight FB review (Meta does whole-app review, one submission at a
   time, irreversible once submitted). Confirmed 2026-05-23.
-- ✅ **Dev-grade now, harden later** (step 8). Confirmed 2026-05-23; **re-confirmed 2026-05-25 (defer)** —
+- ✅ **Dev-grade now, harden later** (step 8). **(UPDATE 2026-05-30 — now LIVE; hardening is IN FLIGHT — P1 IG-token refresh first; see Current state header.)** Confirmed 2026-05-23; **re-confirmed 2026-05-25 (defer)** —
   harden after the dev-mode round-trip is proven, before Live-mode traffic. Known dev-grade gaps:
   restart drops in-memory conversations, no transient retry, dead token breaks outbound silently.
 - ✅ **Human-first routing** by default for the D365 workstream (mirror WhatsApp/FB); not bridge code.
@@ -221,7 +259,7 @@ no App Review.
 - ✅ **Azure infra standardised** (2026-05-24): subscription `95b2f141-b4c6-4e9c-8d69-254c5be3baf9`
   (Core Benefits Credits); **reuse RG `awd-contactcenter-rg`** (no separate IG RG); deploy via explicit
   `dotnet publish` → `Compress-Archive` → `az webapp deploy --type zip`.
-- ✅ **Deploy-now is GET-verify-only on purpose** (2026-05-24): the **Azure Bot + Direct Line channel**
+- ⤫ **(SUPERSEDED 2026-05-30 — the bridge is now fully LIVE; full DM round-trip works.)** Deploy-now is GET-verify-only on purpose (2026-05-24): the **Azure Bot + Direct Line channel**
   that issues the Direct Line secret doesn't exist yet (the D365/Contact Center side is mid-reprovision
   after trial→production), so `RelayProcessorSettings__DirectLineSecret` + the Meta token stay
   placeholders; `VerifyToken` is set so Meta's webhook handshake verifies. Full DM round-trip lights up

@@ -1,6 +1,6 @@
 # awd-ig-bridge
 
-**Instagram Direct → Dynamics 365 Contact Center bridge.** A .NET Azure Function that relays
+**Instagram Direct → Dynamics 365 Contact Center bridge.** A .NET ASP.NET Core Web API (on a Linux Azure App Service) that relays
 Instagram DMs into the D365 agent workspace via Direct Line API 3.0 ("bring your own channel"),
 forked from Microsoft's reference connector.
 
@@ -84,14 +84,14 @@ Settings bind from the `InstagramAdapterSettings` / `RelayProcessorSettings` sec
 
 For **local** real values, override without touching `appsettings.json` via environment variables
 (double-underscore = section nesting), e.g. `setx InstagramAdapterSettings__AppSecret "…"`, or use
-`dotnet user-secrets`. In **production** these come from **Key Vault / Function app settings**
+`dotnet user-secrets`. In **production** these come from **Key Vault / App Service app settings**
 (plan step 4, Chris).
 
 ## The split: code vs portals
 
 - **Autonomous (Claude Code does it here):** fork the sample, write the Instagram adapter + webhook
   verify endpoint + config wiring (plan steps 1–3), prod hardening (step 8).
-- **Interactive (Chris drives, with his Microsoft/Meta logins):** Azure Function deploy, Meta
+- **Interactive (Chris drives, with his Microsoft/Meta logins):** Azure App Service deploy, Meta
   dedicated-app + webhook + permissions, D365 custom channel + workstream, App Review (steps 4–7, 9).
 
 `CLAUDE.md` has the full per-step ownership table.

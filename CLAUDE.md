@@ -2,7 +2,7 @@
 
 ## What this project is
 
-A standalone **.NET Azure Function** that bridges **Instagram Direct Messages** into the
+A standalone **.NET ASP.NET Core Web API** (hosted on a **Linux Azure App Service**) that bridges **Instagram Direct Messages** into the
 **Dynamics 365 Contact Center** agent workspace, via Microsoft's officially-supported
 **Direct Line API 3.0 / "bring your own channel"** path.
 
@@ -125,7 +125,7 @@ The build splits into **code** (autonomous, do it here) and **portal/credential*
 ## Azure target (Chris's tenant)
 
 - **Subscription:** Core Benefits Credits sub `95b2f141-…` (the $2,400/yr Azure credit, expires
-  2027-03-26). Small Function + Key Vault + App Insights ≈ a few £/mo — well inside the credit.
+  2027-03-26). Small App Service + Key Vault + App Insights ≈ a few £/mo — well inside the credit.
 - **Resource group:** e.g. `awd-contactcenter-rg`. **Region:** UK South (data residency; fallback West Europe).
 - **Secrets in Key Vault:** Direct Line secret (from the **Azure Bot's Direct Line channel**), IG/Page
   access token (System User token preferred — non-expiry), Meta app secret, webhook verify token.

@@ -10,7 +10,7 @@ Build a **custom Direct Line bridge** rather than buy. Rationale: hosts on AWD's
 ## Architecture
 
 ```
-Instagram DM  ──webhook──▶  Azure Function (the bridge)            ──Direct Line API 3.0──▶  D365 custom channel
+Instagram DM  ──webhook──▶  App Service Web API (bridge)           ──Direct Line API 3.0──▶  D365 custom channel
 (customer)                   ├─ Adapter Webhook API (IChannelAdapter)                          → workstream → HUMAN queue
                              ├─ Instagram channel adapter (IAdapterBuilder)                       (no bot, mirror WhatsApp/FB)
                              └─ Message relay processor (Direct Line client + watermark poll)
@@ -38,7 +38,7 @@ agent reply  ◀──IG Send API──┘  ◀───────────
 - IG account setting: **"Allow access to messages"** (Instagram → Settings → connected tools) enabled.
 
 **Azure side** (Core Benefits Credits sub `95b2f141-…`, RG e.g. `awd-contactcenter-rg`)
-- **Azure Function** (or small App Service) to host the bridge — on the credit (~£few/mo).
+- **Linux App Service** (the fork is an ASP.NET Core Web API) to host the bridge — on the credit (~£few/mo).
 - **Key Vault** for secrets (Direct Line secret, IG token, app secret, webhook verify token).
 - **Application Insights** for logging/observability.
 
@@ -64,7 +64,7 @@ agent reply  ◀──IG Send API──┘  ◀───────────
 
 ## Cost
 
-- **Azure:** small Function + Key Vault + App Insights ≈ a few £/mo, **inside the $2,400/yr Core Benefits credit**.
+- **Azure:** small App Service + Key Vault + App Insights ≈ a few £/mo, **inside the $2,400/yr Core Benefits credit**.
 - **Meta:** £0 for IG DMs in the 24-hour service window.
 - **D365:** no extra SKU — custom channel is covered by the Contact Center licence.
 - **vs alternatives:** SyncBox 365 = unknown subscription (quote-only); Sprinklr = £600–1,500/user/mo.
