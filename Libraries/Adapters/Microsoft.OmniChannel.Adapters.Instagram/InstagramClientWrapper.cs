@@ -20,7 +20,10 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// <summary>X-Hub-Signature-256 request header carrying the HMAC of the body.</summary>
         public const string SignatureHeaderName = "X-Hub-Signature-256";
 
-        private const string GraphApiBaseUrl = "https://graph.facebook.com";
+        // Instagram API with Instagram Login signs webhooks with the Instagram app secret and serves the
+        // Send API from graph.instagram.com (NOT graph.facebook.com — that returns "(#3) Application does not
+        // have the capability"). The access token must be an Instagram-user token (IGAA…), not a Page token.
+        private const string GraphApiBaseUrl = "https://graph.instagram.com";
         private const string DefaultGraphApiVersion = "v21.0";
 
         private readonly IOptions<InstagramAdapterConfiguration> _configuration;
