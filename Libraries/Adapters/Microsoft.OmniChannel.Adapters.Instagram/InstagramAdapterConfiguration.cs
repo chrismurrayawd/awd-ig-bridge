@@ -41,5 +41,22 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// the reply window to 7 days (vs the 24h service window). Off by default; enable for late agent replies.
         /// </summary>
         public bool UseHumanAgentTag { get; set; }
+
+        /// <summary>
+        /// Name of the Key Vault secret holding the Instagram-user token (P1 auto-refresh). Defaults to
+        /// "IgUserAccessToken" when unset.
+        /// </summary>
+        public string TokenSecretName { get; set; }
+
+        /// <summary>
+        /// Refresh the token once its remaining lifetime drops below this many days. Defaults to 20 when ≤ 0
+        /// (well inside the ~60-day token life).
+        /// </summary>
+        public int TokenRefreshThresholdDays { get; set; }
+
+        /// <summary>
+        /// How often the background refresher checks the token, in hours. Defaults to 12 when ≤ 0.
+        /// </summary>
+        public int TokenRefreshCheckIntervalHours { get; set; }
     }
 }

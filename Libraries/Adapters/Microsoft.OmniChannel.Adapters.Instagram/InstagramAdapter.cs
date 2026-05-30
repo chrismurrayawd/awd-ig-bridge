@@ -30,8 +30,8 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// <summary>
         /// Initializes a new instance of the <see cref="InstagramAdapter"/> class using configuration settings.
         /// </summary>
-        public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration)
-            : this(new InstagramClientWrapper(instagramAdapterConfiguration))
+        public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration, IInstagramTokenProvider tokenProvider)
+            : this(new InstagramClientWrapper(instagramAdapterConfiguration, tokenProvider))
         {
             _relayProcessor = relayProcessor;
             _useHumanAgentTag = instagramAdapterConfiguration?.Value?.UseHumanAgentTag ?? false;

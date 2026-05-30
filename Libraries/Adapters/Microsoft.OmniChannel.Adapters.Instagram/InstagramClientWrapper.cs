@@ -27,17 +27,23 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         private const string DefaultGraphApiVersion = "v21.0";
 
         private readonly IOptions<InstagramAdapterConfiguration> _configuration;
+        private readonly IInstagramTokenProvider _tokenProvider;
         private readonly HttpClient _httpClient;
 
-        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration)
+        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider)
+            : this(configuration, tokenProvider, new HttpClient())
+        {
+        }
+
+        // Overload taking an explicit HttpClient — used by tests to inject a stub handler.
+        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider, HttpClient httpClient)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
 
-            if (string.IsNullOrWhiteSpace(_configuration.Value?.PageAccessToken))
-            {
-                throw new MissingFieldException(nameof(InstagramAdapterConfiguration.PageAccessToken));
-            }
-
+            // The access token is no longer validated here: it is owned by the token provider (which may still
+            // be initialising / seeding at construction time). AppSecret and IgBusinessId are static config.
             if (string.IsNullOrWhiteSpace(_configuration.Value?.AppSecret))
             {
                 throw new MissingFieldException(nameof(InstagramAdapterConfiguration.AppSecret));
@@ -47,8 +53,6 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
             {
                 throw new MissingFieldException(nameof(InstagramAdapterConfiguration.IgBusinessId));
             }
-
-            _httpClient = new HttpClient();
         }
 
         /// <summary>
@@ -75,12 +79,19 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
                 throw new ArgumentNullException(nameof(sendRequests));
             }
 
+            // Read the token from the provider at send time so a background refresh takes effect with no restart.
+            var token = await _tokenProvider.GetTokenAsync().ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new InvalidOperationException("No Instagram access token is available to send the outbound message.");
+            }
+
             var version = string.IsNullOrWhiteSpace(_configuration.Value.GraphApiVersion)
                 ? DefaultGraphApiVersion
                 : _configuration.Value.GraphApiVersion;
 
             var url = $"{GraphApiBaseUrl}/{version}/{_configuration.Value.IgBusinessId}/messages" +
-                      $"?access_token={Uri.EscapeDataString(_configuration.Value.PageAccessToken)}";
+                      $"?access_token={Uri.EscapeDataString(token)}";
 
             foreach (var sendRequest in sendRequests)
             {

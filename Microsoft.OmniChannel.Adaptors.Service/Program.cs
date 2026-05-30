@@ -9,6 +9,7 @@ using Microsoft.OmniChannel.Adapters.Line;
 using Microsoft.OmniChannel.MessageRelayProcessor;
 using Newtonsoft.Json.Serialization;
 using NLog.Extensions.Logging;
+using System;
 using System.Collections.Generic;
 
 namespace Microsoft.OmniChannel.Adapters.Service
@@ -64,6 +65,26 @@ namespace Microsoft.OmniChannel.Adapters.Service
             services.AddSingleton<LineAdapter>();
             services.AddSingleton<InstagramAdapter>();
             services.AddTransient<IRelayProcessor, RelayProcessor>();
+
+            // P1 — Instagram-user token persistence + auto-refresh (plan step 8).
+            // Key Vault store when KeyVault:Uri is set (production, via managed identity); config-backed
+            // fallback otherwise (local dev / tests need no Azure).
+            services.AddSingleton(TimeProvider.System);
+
+            var keyVaultUri = configuration["KeyVault:Uri"];
+            if (!string.IsNullOrWhiteSpace(keyVaultUri))
+            {
+                services.AddSingleton<ISecretClientAdapter>(_ => new KeyVaultSecretClientAdapter(new Uri(keyVaultUri)));
+                services.AddSingleton<IInstagramTokenStore, KeyVaultInstagramTokenStore>();
+            }
+            else
+            {
+                services.AddSingleton<IInstagramTokenStore, ConfigInstagramTokenStore>();
+            }
+
+            services.AddSingleton<IInstagramTokenProvider, InstagramTokenProvider>();
+            services.AddHttpClient<IInstagramTokenRefreshClient, InstagramTokenRefreshClient>();
+            services.AddHostedService<InstagramTokenRefreshService>();
 
             services.AddSingleton<AdapterServiceResolver>(serviceProvider => key =>
             {
