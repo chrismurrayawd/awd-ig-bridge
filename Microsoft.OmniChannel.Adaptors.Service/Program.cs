@@ -25,9 +25,16 @@ namespace Microsoft.OmniChannel.Adapters.Service
         {
             var builder = WebApplication.CreateBuilder(args);
 
-            // Logging: route through NLog (nlog.config), as the sample did.
+            // Logging: route through NLog (nlog.config -> stdout console), as the sample did.
             builder.Logging.ClearProviders();
             builder.Logging.AddNLog();
+
+            // P2 observability: Application Insights. No-op when APPLICATIONINSIGHTS_CONNECTION_STRING is
+            // unset (local/dev), so this is safe to leave in regardless of environment. When set, ILogger
+            // entries (Information+) and request telemetry flow to a queryable sink — the App Service docker
+            // log stream has proven unreliable for this app.
+            builder.Services.AddApplicationInsightsTelemetry();
+            builder.Logging.AddApplicationInsights();
 
             ConfigureServices(builder.Services, builder.Configuration);
 

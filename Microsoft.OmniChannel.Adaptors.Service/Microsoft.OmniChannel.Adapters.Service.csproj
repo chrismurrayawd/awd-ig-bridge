@@ -8,6 +8,8 @@
     <!-- JToken action parameters + camelCase-off serialization need the Newtonsoft formatter -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="8.0.11" />
     <PackageReference Include="NLog.Extensions.Logging" Version="5.3.14" />
+    <!-- P2 observability: queryable telemetry/log sink (the App Service docker/log-stream sink is unreliable for this app) -->
+    <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.22.0" />
   </ItemGroup>
 
   <ItemGroup>

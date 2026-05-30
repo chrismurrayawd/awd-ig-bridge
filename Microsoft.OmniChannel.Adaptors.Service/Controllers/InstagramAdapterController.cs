@@ -59,6 +59,8 @@ namespace Microsoft.OmniChannel.Adapters.Service.Controllers
                 return StatusCode(403, "Verification failed.");
             }
 
+            _logger?.LogInformation("Instagram webhook verification succeeded (mode={Mode}).", mode);
+
             // Meta expects the raw challenge value echoed back with 200.
             return Content(verified, "text/plain");
         }
@@ -105,15 +107,16 @@ namespace Microsoft.OmniChannel.Adapters.Service.Controllers
             catch (InvalidOperationException ex)
             {
                 // Raised on signature validation failure — reject the (possibly forged) request.
-                _logger.LogWarning($"postactivityasync rejected: {ex.Message}");
+                _logger.LogWarning(ex, "Instagram inbound webhook REJECTED: signature validation failed (bodyBytes={BodyBytes}).", rawBody.Length);
                 return StatusCode(403, "Signature validation failed.");
             }
             catch (Exception ex)
             {
-                _logger.LogError($"postactivityasync: {ex}");
+                _logger.LogError(ex, "Instagram inbound webhook FAILED while processing (bodyBytes={BodyBytes}).", rawBody.Length);
                 return StatusCode(500, "An error occured while handling your request.");
             }
 
+            _logger.LogInformation("Instagram inbound webhook accepted (signature OK, bodyBytes={BodyBytes}).", rawBody.Length);
             return StatusCode(200);
         }
     }

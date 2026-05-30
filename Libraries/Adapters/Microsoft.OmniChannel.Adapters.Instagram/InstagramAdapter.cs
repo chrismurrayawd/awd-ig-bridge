@@ -2,6 +2,7 @@
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.Bot.Connector.DirectLine;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.OmniChannel.Adapter.Builder;
 using Microsoft.OmniChannel.MessageRelayProcessor;
@@ -23,6 +24,7 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         private readonly IRelayProcessor _relayProcessor;
         private readonly InstagramClientWrapper _instagramClient;
         private readonly bool _useHumanAgentTag;
+        private readonly ILogger _logger;
 
         /// <summary>Callback raised by the relay processor with activities to send back to Instagram.</summary>
         private event EventHandler<IList<Activity>> InstagramActivitiesReceived;
@@ -30,11 +32,12 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// <summary>
         /// Initializes a new instance of the <see cref="InstagramAdapter"/> class using configuration settings.
         /// </summary>
-        public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration, IInstagramTokenProvider tokenProvider)
+        public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration, IInstagramTokenProvider tokenProvider, ILogger<InstagramAdapter> logger = null)
             : this(new InstagramClientWrapper(instagramAdapterConfiguration, tokenProvider))
         {
             _relayProcessor = relayProcessor;
             _useHumanAgentTag = instagramAdapterConfiguration?.Value?.UseHumanAgentTag ?? false;
+            _logger = logger;
             InstagramActivitiesReceived += OnActivitiesReceived;
         }
 
@@ -111,10 +114,20 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
                 }
 
                 await ProcessOutboundActivitiesAsync(outboundActivities).ConfigureAwait(false);
+                _logger?.LogInformation("Instagram outbound delivery succeeded ({Count} activity/ies).", outboundActivities.Count);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.TraceError($"Instagram outbound delivery failed: {ex}");
+                // This runs on the relay polling thread — without a real log sink this failure is invisible,
+                // which is exactly how a dead token / Send-API error silently swallowed agent replies before.
+                if (_logger != null)
+                {
+                    _logger.LogError(ex, "Instagram OUTBOUND delivery FAILED — agent reply not delivered to the customer.");
+                }
+                else
+                {
+                    System.Diagnostics.Trace.TraceError($"Instagram outbound delivery failed: {ex}");
+                }
             }
         }
 
