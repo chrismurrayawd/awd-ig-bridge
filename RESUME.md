@@ -78,7 +78,10 @@ don't expire → **no background refresher**, just durable KV + load-at-startup 
 workflow → **Option B**: two parallel seams reusing `ISecretClientAdapter` as-is, **zero P1-source churn**), 5 green
 commits, then an adversarial review.
 
-- **Branch:** `p5-secret-hygiene` (off `main`). `dotnet test` = **130 green** (was 102; +28 P5 tests).
+- **Branch:** `p5-secret-hygiene` (off `main`). `dotnet test` = **132 green** (was 102; +30 P5 tests). Built
+  design-first (judged workflow → Option B) then an adversarial review (5 lenses → verify); the one confirmed-real
+  finding fixed: `KeyVaultDirectLineSecretProvider.WarmAsync` now falls back to the config seed on a transient
+  Key Vault *read* failure (host stays up, P1-parity) and fails loud only when no secret exists anywhere.
 - **KV secret names:** `MetaAppSecret`, `DirectLineSecret` (P1's `IgUserAccessToken` unaffected).
 - **AppSecret** → `IAppSecretProvider` in the adapter (reuses `ISecretClientAdapter`); `ValidateSignature` is now
   **async** and reads the provider (fail-closed → 403, never throws). **DirectLineSecret** → relay-defined

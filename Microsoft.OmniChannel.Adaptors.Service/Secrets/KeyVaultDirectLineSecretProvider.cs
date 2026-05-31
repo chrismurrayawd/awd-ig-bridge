@@ -61,14 +61,42 @@ namespace Microsoft.OmniChannel.Adapters.Service.Secrets
                     return;
                 }
 
-                var secret = await _secretClient.GetSecretAsync(SecretName, cancellationToken).ConfigureAwait(false);
+                var seed = _configuration.Value?.DirectLineSecret;
+
+                StoredSecret secret;
+                try
+                {
+                    secret = await _secretClient.GetSecretAsync(SecretName, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // The Key Vault READ failed (transient blip / throttling / the managed identity not yet
+                    // reachable — the failure class that bit P1). Don't take the whole bridge down at boot if we
+                    // still hold a valid configured secret to serve (mirrors P1's lazy resilience): fall back to it
+                    // for this process and re-read Key Vault on the next restart (the authoritative source). Fail
+                    // LOUD only when there is genuinely no secret anywhere.
+                    if (!string.IsNullOrWhiteSpace(seed))
+                    {
+                        Volatile.Write(ref _cached, seed);
+                        _initialized = true;
+                        _logger.LogError(ex,
+                            "Failed to read the Direct Line secret from Key Vault secret {SecretName}; falling back to the configured DirectLineSecret for this process (Key Vault is re-read on the next restart).",
+                            SecretName);
+                        return;
+                    }
+
+                    _logger.LogCritical(ex,
+                        "Failed to read the Direct Line secret from Key Vault secret {SecretName} and no DirectLineSecret app setting is configured to fall back to; the relay/poller cannot start.",
+                        SecretName);
+                    throw;
+                }
+
                 var value = secret?.Value;
 
                 if (string.IsNullOrWhiteSpace(value))
                 {
-                    // First deploy: Key Vault is empty. Seed it from the DirectLineSecret app setting so Key Vault
-                    // becomes the single source of truth from now on (written again only by a human rotation).
-                    var seed = _configuration.Value?.DirectLineSecret;
+                    // Key Vault reachable but empty (first deploy): seed it from the DirectLineSecret app setting so
+                    // Key Vault becomes the single source of truth from now on (written again only by a human rotation).
                     if (!string.IsNullOrWhiteSpace(seed))
                     {
                         value = seed;
@@ -109,9 +137,12 @@ namespace Microsoft.OmniChannel.Adapters.Service.Secrets
                 return Volatile.Read(ref _cached);
             }
 
-            // Defensive: reached before Program.Main's warm step (e.g. a future code path or a unit test). Block ONCE
-            // at startup, off any request thread (the generic host has no SynchronizationContext, so no deadlock),
-            // to populate the cache. In production this is already a cache hit.
+            // Not yet warmed. Program.Main warms this provider before app.Run(), and WarmAsync sets _initialized on
+            // every non-throwing completion (Key Vault hit, first-deploy seed, or seed-fallback), so by the time the
+            // host serves any request _initialized is already true — this defensive block is therefore reached only
+            // when the Direct Line gateway is constructed during host start (or from a unit test), NOT from a served
+            // request such as /api/TokenHealth. Block once: safe because the generic host has no SynchronizationContext
+            // (no deadlock) and WarmAsync uses ConfigureAwait(false).
             WarmAsync(CancellationToken.None).GetAwaiter().GetResult();
             return Volatile.Read(ref _cached);
         }

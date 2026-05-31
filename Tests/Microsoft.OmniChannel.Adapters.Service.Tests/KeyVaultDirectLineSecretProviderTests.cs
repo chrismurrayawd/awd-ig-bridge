@@ -79,6 +79,41 @@ namespace Microsoft.OmniChannel.Adapters.Service.Tests
         }
 
         [Fact]
+        public async Task Warm_KvReadThrows_WithSeed_FallsBackToSeed_NoThrow()
+        {
+            // A transient KV READ failure (not 404) with a valid config seed present must NOT crash the host —
+            // fall back to the configured secret (P1-parity resilience). It must NOT write to KV (it's unreachable).
+            var kv = new Mock<ISecretClientAdapter>();
+            kv.Setup(c => c.GetSecretAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+              .ThrowsAsync(new InvalidOperationException("Key Vault unreachable / managed identity not ready"));
+            var provider = new KeyVaultDirectLineSecretProvider(kv.Object, Config(seed: "dl-seed"), NullLogger<KeyVaultDirectLineSecretProvider>.Instance);
+
+            await provider.WarmAsync(CancellationToken.None);
+
+            Assert.Equal("dl-seed", provider.GetSecret());
+            kv.Verify(c => c.SetSecretAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTimeOffset?>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Fact]
+        public async Task Warm_KvReadThrows_NoSeed_Rethrows_AndDoesNotCacheFailedInit()
+        {
+            // No config seed to fall back to → fail LOUD (rethrow → crashes boot). And a failed init must not be
+            // cached: a later warm (KV now reachable) recovers, so GetSecretAsync is called again.
+            var kv = new Mock<ISecretClientAdapter>();
+            kv.SetupSequence(c => c.GetSecretAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+              .ThrowsAsync(new InvalidOperationException("Key Vault unreachable"))
+              .ReturnsAsync(new StoredSecret("kv-dl", null));
+            var provider = new KeyVaultDirectLineSecretProvider(kv.Object, Config(seed: ""), NullLogger<KeyVaultDirectLineSecretProvider>.Instance);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => provider.WarmAsync(CancellationToken.None));
+
+            // Not cached as failed → the next warm re-reads and recovers.
+            await provider.WarmAsync(CancellationToken.None);
+            Assert.Equal("kv-dl", provider.GetSecret());
+            kv.Verify(c => c.GetSecretAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        }
+
+        [Fact]
         public async Task Warm_UsesConfiguredSecretName()
         {
             var kv = new Mock<ISecretClientAdapter>();
