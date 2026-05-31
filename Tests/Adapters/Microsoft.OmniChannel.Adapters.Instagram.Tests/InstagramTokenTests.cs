@@ -362,6 +362,29 @@ namespace Microsoft.OmniChannel.Adapters.Instagram.Tests
             Assert.Contains("graph.instagram.com", url1);
         }
 
+        [Fact]
+        public async Task SendMessagesAsync_NonSuccess_ThrowsTypedSendExceptionWithStatus()
+        {
+            // A dead token returns 401 — the outbound retry must be able to read the status (terminal, no retry)
+            // rather than parse a message string. Verifies the InstagramSendException refactor.
+            var handler = new StubHttpMessageHandler(_ => Json(HttpStatusCode.Unauthorized, "{\"error\":{\"code\":190}}"));
+            var provider = new Mock<IInstagramTokenProvider>();
+            provider.Setup(p => p.GetTokenAsync(It.IsAny<CancellationToken>())).ReturnsAsync("dead-token");
+            var wrapper = new InstagramClientWrapper(Config(), provider.Object, new HttpClient(handler));
+            var requests = new List<InstagramSendRequest>
+            {
+                new InstagramSendRequest
+                {
+                    Recipient = new InstagramRecipient { Id = "igsid-1" },
+                    Message = new InstagramSendMessage { Text = "hi" },
+                    MessagingType = "RESPONSE",
+                },
+            };
+
+            var ex = await Assert.ThrowsAsync<InstagramSendException>(() => wrapper.SendMessagesAsync(requests));
+            Assert.Equal(401, ex.StatusCode);
+        }
+
         // ---- Test doubles ---------------------------------------------------
 
         private static HttpResponseMessage Json(HttpStatusCode status, string body) =>
