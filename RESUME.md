@@ -65,10 +65,28 @@ sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
 3. **Tidy stale vault access policies** — earlier identity principalIds (`2983d974…`, `ce252f3f…`) still have
    policies on `awd-ig-bridge-kv`; only `b3429ddd…` (current MI) is needed.
 4. **Remaining hardening:** **P3** durable conversation store — **✅ DONE & deployed** ·
-   **P5** secret hygiene (AppSecret/DirectLineSecret → KV) — **✅ code-complete on branch `p5-secret-hygiene`
-   (NOT deployed; see P5 block below)** · **P4** richer attachment/story handling — still open.
+   **P5** secret hygiene (AppSecret/DirectLineSecret → KV) — **✅ DEPLOYED & verified 2026-06-01 (see P5 block below);
+   remaining: rotate both secrets + delete the plaintext app settings (Chris-driven)** · **P4** richer
+   attachment/story handling — still open (the last hardening item).
 
-### ◀ P5 — secret hygiene: CODE-COMPLETE on branch `p5-secret-hygiene` (2026-05-31, NOT deployed)
+### ✅ P5 — secret hygiene: DEPLOYED & VERIFIED in production (2026-06-01)
+
+> **DEPLOYED 2026-06-01.** PR [#2](https://github.com/chrismurrayawd/awd-ig-bridge/pull/2) merged to `main` (merge
+> `4999142`); the new build is live on `awd-ig-bridge` (zip-deploy `RuntimeSuccessful` first try). **Both secrets are
+> now durable in Key Vault `awd-ig-bridge-kv` and served via the managed identity** — `az keyvault secret list` shows
+> `MetaAppSecret` + `DirectLineSecret` (+ P1's `IgUserAccessToken`). `/api/TokenHealth` confirms
+> `appSecretStoreType=KeyVaultAppSecretStore` (HasValue=true, len 32), `directLineSecretProviderType=KeyVaultDirectLineSecretProvider`
+> (HasValue=true, len 169), `msiProbeStatus=200`; GET-verify wrong-token → 403; **0 exceptions / 0 Error-Critical traces
+> on boot.** The seeded KV values equal the live plaintext values, so inbound/outbound are functionally unchanged — only
+> the source moved to KV. **▶ STILL TO DO (Chris-driven, runbook [`docs/secret-rotation-runbook.md`](docs/secret-rotation-runbook.md)):**
+> (1) **rotate** both secrets — they were handled in plaintext on 2026-05-30 — Meta dashboard *Reset* the app secret +
+> Azure Bot *regenerate* the Direct Line key → `az keyvault secret set` → `az webapp restart` → verify (maintenance
+> window; regenerating the DL key invalidates the old one immediately). (2) After a verified cycle, **delete the
+> plaintext `InstagramAdapterSettings__AppSecret` + `RelayProcessorSettings__DirectLineSecret` app settings** (kept now
+> as the safety net, mirroring how P1's `PageAccessToken` was left). Until then KV is authoritative and the plaintext
+> settings are only the seed/fallback.
+
+#### Original (pre-deploy) P5 record — branch `p5-secret-hygiene`
 
 Moves the two remaining plaintext secrets — `InstagramAdapterSettings:AppSecret` (validates inbound
 `X-Hub-Signature-256`) and `RelayProcessorSettings:DirectLineSecret` (Direct Line relay) — into Key Vault

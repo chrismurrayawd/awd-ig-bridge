@@ -300,7 +300,14 @@ Insights / `/api/TokenHealth`-style health, since the log stream is dead — see
 - Today inbound media/stories degrade to a text placeholder (`InstagramHelper.DescribeAttachments`). Surface image/story
   URLs (or media) to the agent per the IG webhook payload shapes. Lower priority.
 
-## P5 — Secret hygiene  ◀ CODE-COMPLETE on branch `p5-secret-hygiene` (NOT deployed; awaiting Chris's go-ahead)
+## P5 — Secret hygiene  ✅ DEPLOYED & VERIFIED in production (2026-06-01)
+
+> **DEPLOYED 2026-06-01.** PR [#2](https://github.com/chrismurrayawd/awd-ig-bridge/pull/2) merged (`4999142`),
+> zip-deployed `RuntimeSuccessful`. Both secrets auto-seeded into Key Vault on boot and are served via the MI —
+> `az keyvault secret list` shows `MetaAppSecret` + `DirectLineSecret`; `/api/TokenHealth` confirms the KeyVault store
+> types + HasValue=true + correct lengths (32 / 169) + `msiProbeStatus=200`; 0 exceptions / 0 Error-Critical on boot.
+> **Remaining (Chris-driven, see [`docs/secret-rotation-runbook.md`](../docs/secret-rotation-runbook.md)):** rotate
+> both secrets (handled in plaintext on 2026-05-30), then delete the plaintext app settings after a verified cycle.
 
 ### ✅ AS-BUILT (2026-05-31) — Option B (two parallel seams), design-first + adversarial review
 
