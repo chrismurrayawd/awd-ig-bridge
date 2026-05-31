@@ -66,8 +66,11 @@ sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
    policies on `awd-ig-bridge-kv`; only `b3429ddd…` (current MI) is needed.
 4. **Remaining hardening:** **P3** durable conversation store — **✅ DONE & deployed** ·
    **P5** secret hygiene (AppSecret/DirectLineSecret → KV) — **✅ DEPLOYED & verified 2026-06-01 (see P5 block below);
-   remaining: rotate both secrets + delete the plaintext app settings (Chris-driven)** · **P4** richer
-   attachment/story handling — still open (the last hardening item).
+   remaining: rotate both secrets + delete the plaintext app settings (Chris-driven)** · **P6** presence-aware queueing
+   (NEW 2026-05-31 — IG DMs interrupt the agent with a toast while DND/on a call instead of queueing via unified
+   routing like the native channels; customer-impacting, **higher priority than P4** — see
+   [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → P6 + [`docs/2026-05-31-queue-hardening.md`](docs/2026-05-31-queue-hardening.md)) ·
+   **P4** richer attachment/story handling — still open (lower priority).
 
 ### ✅ P5 — secret hygiene: DEPLOYED & VERIFIED in production (2026-06-01)
 

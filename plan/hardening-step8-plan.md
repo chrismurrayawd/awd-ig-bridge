@@ -1,6 +1,6 @@
 # Prod-hardening (plan step 8) — phased implementation plan
 
-**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-05-31):** ✅ **P1 + P2 DONE & deployed** · **P3 CODE-COMPLETE on branch `p3-durable-conversation-store` (103 tests green, NOT deployed)** · P4–P5 remaining.
+**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-06-01):** ✅ **P1 + P2 + P3 + P5 DONE & deployed** · **P6 (presence-aware queueing — NEW) + P4 (attachments) remaining.**
 **Context:** the bridge is LIVE in production (see [`RESUME.md`](../RESUME.md) → *Current state*). It was built
 dev-grade on purpose; this plan hardens it. Built **P1-first** because P1 has a hard external deadline.
 
@@ -403,6 +403,53 @@ app settings are deleted once KV is authoritative.
 > Deploy gotchas (don't relearn): GNU `tar` can't zip → Python `zipfile` forward-slash; first `az webapp deploy` may
 > 502 on SCM cold-start → retry; `az monitor app-insights query -o table` renders empty → use `-o json`. Keep B1
 > single-instance.
+
+---
+
+## P6 — Presence-aware queueing (route IG via unified routing, not direct agent assignment)  ◀ NEW (2026-05-31)
+
+**Source:** [`docs/2026-05-31-queue-hardening.md`](../docs/2026-05-31-queue-hardening.md) — found during D365 Contact
+Center concurrency testing.
+
+**BUG (customer-impacting):** when an IG DM arrives while the agent (`cs@alloywheelsdirect.com`) is on a voice call —
+presence = **Busy-DND** (`192360002`, auto-set on a call) — the IG conversation pops an **incoming-conversation toast /
+assignment immediately, interrupting the call.** The native D365 channels (WhatsApp, Facebook, live web chat) correctly
+**queue** the message as an open work item with **no toast** while the agent is DND, and only offer it once the agent is
+Available again.
+
+**Not a D365 routing-config difference (already ruled out):** all four messaging workstreams have *identical* routing —
+same allowed presences (`192360000` Available, `192360001` Busy; DND `192360002` excluded), same work-distribution mode,
+same capacity model. The differentiator is the **delivery path**: Instagram is the only channel coming through the
+custom bridge → Direct Line → Azure Bot → D365. So IG appears to be **injected/assigned directly to the agent rather
+than dropped into the AWD Instagram workstream's queue for unified routing** (which is what enforces presence + capacity).
+
+**Desired behaviour:** IG inbound enters via the **AWD Instagram workstream's queue / unified routing**, obeying the
+same presence + capacity gating as the other channels — while the agent is DND the IG conversation **waits silently in
+the queue** (open work item, no toast) and is offered only when they return to Available/Busy.
+
+**Investigate first (design-first; do NOT assume it's bridge code):** the conversation is *created on the D365 side*
+(bridge posts an `Activity` to Direct Line → Azure Bot forwards to the D365 callback). The presence-bypass could be:
+- **D365 / custom-channel config** — a custom (Direct Line) channel may default to direct-assign / skip-unified-routing,
+  or need a routing-rule / "work distribution" toggle the native channels get implicitly. **This may be a portal fix,
+  not a code change** — check the AWD Instagram channel + workstream's routing-rule set vs the WhatsApp one in Copilot
+  Service admin center, and whether the custom channel is attached to unified routing at all.
+- **Activity / conversation shape** — something in how the bridge builds the inbound `Activity` (`channelData`,
+  `ConversationContext`/`CustomerContext`, conversation-creation path) that makes D365 treat it as a direct-assign
+  rather than a queued work item. Compare a captured native-channel inbound vs the bridge's.
+- **Azure Bot / Direct Line channel** wiring (the messaging endpoint / channel registration) influencing assignment.
+
+**Likely steps:** (1) locate where the inbound IG message becomes a D365 conversation/work-item and how it's assigned
+(queue vs direct); (2) make it route via the AWD Instagram workstream's queue (unified routing) so presence/capacity
+apply; (3) re-test. Sequence the fix once the root cause (config vs code) is confirmed.
+
+**D365 context:** org `org7a63d391.crm11.dynamics.com`; AWD Instagram workstream `ae0c4a33-8876-b07a-7b08-cca1ebafdc78`
+(capacity 10 units; allowed presences `192360000,192360001`); agent `cs@alloywheelsdirect.com`; presence codes
+`192360000` Available / `192360001` Busy / `192360002` Do-Not-Disturb.
+
+**Acceptance:** put `cs@` on a voice call (presence → Busy-DND), send an IG DM → it appears as a **queued / open work
+item with NO toast** and is offered only after the call ends — matching the WhatsApp / live-chat behaviour.
+
+**Priority:** higher than P4 — it interrupts live customer calls today. P4 (richer attachments) remains lower priority.
 
 ---
 
