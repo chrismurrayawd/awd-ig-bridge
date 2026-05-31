@@ -1,6 +1,6 @@
 # Prod-hardening (plan step 8) — phased implementation plan
 
-**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-05-31):** ✅ **P1 + P2 DONE & deployed** · P3–P5 remaining.
+**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-05-31):** ✅ **P1 + P2 DONE & deployed** · **P3 CODE-COMPLETE on branch `p3-durable-conversation-store` (103 tests green, NOT deployed)** · P4–P5 remaining.
 **Context:** the bridge is LIVE in production (see [`RESUME.md`](../RESUME.md) → *Current state*). It was built
 dev-grade on purpose; this plan hardens it. Built **P1-first** because P1 has a hard external deadline.
 
@@ -127,7 +127,47 @@ app setting), outbound still works, and a refresh failure is **logged/alerted** 
   request + response status**; **token-refresh events + ANY Send-API/token failure**.
 - **Acceptance:** a signature failure and a full round-trip are both queryable in App Insights within ~1 min.
 
-## P3 — Durable conversation store (replace in-memory cache + polling)  ◀ IN FLIGHT 2026-05-31
+## P3 — Durable conversation store (replace in-memory cache + polling)  ◀ CODE-COMPLETE 2026-05-31 (branch, not deployed)
+
+### ✅ AS-BUILT (2026-05-31) — code-complete on branch `p3-durable-conversation-store`, awaiting Chris's deploy go-ahead
+
+Built per the locked design below, in 10 commit-sized steps (`dotnet test` green at every commit; **103 tests**, was
+44), then an adversarial review (5 lenses → verify → synthesize, verdict **SHIP** after 3 fixes — all applied).
+**Not merged, not deployed.** Branch off `main`.
+
+**What shipped:** Line channel removed → `IConversationStore` + `InMemoryConversationStore` → `IDirectLineGateway`
+seam → `RetryExecutor`/`TransientFaultClassifier` + `ResilientDirectLineGateway` + typed `InstagramSendException`
+→ `IOutboundActivitySink`/`OutboundSinkResolver` + gutted stateless `RelayProcessor` (deleted `ActiveConversationCache`
++ `DirectLineConversation` + the polling `Thread`) → `ConversationPollingService` (rehydration loop) →
+`TableConversationStore` + `ITableClientAdapter` → DI wiring + 3 smoke tests → adversarial-review fixes.
+The headline acceptance is proven by a unit test (seed an Active row as if it survived a restart, run one poll tick,
+the agent reply reaches the sink addressed to the IGSID — rehydration *is* the steady-state loop).
+
+**▶ Deploy-time prerequisites (Chris drives; bridge falls back to in-memory + config until done):**
+1. **Provision a Storage account** (UK South, in `awd-contactcenter-rg`) and **grant the App Service system-assigned
+   managed identity the `Storage Table Data Contributor` role** on it (same MI as P1's Key Vault — the easy-to-forget
+   grant that bit P1). Set app setting `RelayProcessorSettings__TableServiceUri=https://<account>.table.core.windows.net/`.
+   Without it the bridge silently uses `InMemoryConversationStore` (restarts still drop conversations — P3 is inert).
+2. **Deploy** via the forward-slash zip incantation, then run the **#1 live acceptance**: DM in → **restart the app**
+   → agent reply → reply still reaches the customer. This also proves the one genuine unknown — does Direct Line
+   resume a conversation by `ConversationId`+watermark across the restart gap on the old `Bot.Connector.DirectLine 3.0.2`
+   SDK? If it 404s, the row is marked **Faulted** + logged Critical (visible, never silent); only then would a
+   DL-token persist/refresh be needed.
+
+**Accepted residuals (documented, not bugs — confirmed by the review):**
+- **At-least-once**: a crash between the `LastDeliveredActivityId` write and the watermark write can re-deliver the
+  non-last activities of a *multi-part* reply next tick (duplicate, never a drop). Single-activity replies are
+  effectively-once. Full per-activity ledger deferred (Chris's call).
+- **EndOfConversation close-race (TOCTOU, single-instance)**: an inbound read as Active can post onto a row the poller
+  concurrently marks Ended, stranding that inbound until the customer's next message. Narrow window; the 404/Faulted
+  sub-case is *not* silent (the post also 404s → throws to the webhook → Meta retries). Defensive fix deferred.
+- **Single-instance assumption**: `OwnerLease`/`LeaseExpiry` columns exist but are dormant — **keep the B1 at one
+  instance** until a lease CAS is wired (two pollers would double-poll/double-send). A defensive `ConversationId`
+  guard in `UpdateRowAsync` was added as cheap scale-out insurance.
+
+**Recommended test backfill before Live-mode customer traffic (not gating the Testers trial):** `_inFlight` overlap,
+`UpdateRowAsync` ETag-conflict/exhaustion, a real Create→ListActive Table round-trip (integration), create-race at the
+store level.
 
 ### 🔒 LOCKED DESIGN (2026-05-31) — chosen via a judged design workflow; design brief below is the source spec
 

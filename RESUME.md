@@ -1,11 +1,16 @@
 # RESUME — IG → D365 Contact Center bridge
 
-## ✅ Current state (2026-05-31) — LIVE in production; P1 + P2 hardening DONE
+## ✅ Current state (2026-05-31) — LIVE in production; P1 + P2 DONE; **P3 code-complete on a branch (not deployed)**
 
 The bridge is **live and serving real customer Instagram DMs in both directions** (inbound IG → D365
 agent workspace; agent reply → IG), on the Linux App Service **`awd-ig-bridge`**. It runs under Meta
 **Standard Access** as a first-party app on AWD's own Instagram account — **no App Review, no Advanced
 Access, and no Tech Provider are needed** (do NOT submit App Review / do NOT become a Tech Provider).
+
+> **P3 (durable conversation store) is CODE-COMPLETE on branch `p3-durable-conversation-store` — built, reviewed,
+> 103 tests green, but NOT merged and NOT deployed (awaiting Chris's go-ahead).** See the dedicated P3 block below
+> (`### ✅ P3 …`) and [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → *P3 AS-BUILT* for the deploy
+> prerequisites (a Storage account + the managed-identity Table role) and the live-acceptance test.
 
 **Host:** ASP.NET Core Web API on **Linux Azure App Service `awd-ig-bridge`** (RG `awd-contactcenter-rg`,
 sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
@@ -55,8 +60,31 @@ sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
    values, but worth removing now KV is finished (delete `TokenHealthController.cs` + redeploy).
 3. **Tidy stale vault access policies** — earlier identity principalIds (`2983d974…`, `ce252f3f…`) still have
    policies on `awd-ig-bridge-kv`; only `b3429ddd…` (current MI) is needed.
-4. **Remaining hardening:** **P3** durable conversation store (replace in-memory cache + polling thread) ·
+4. **Remaining hardening:** **P3** durable conversation store — **✅ code-complete on branch (see P3 block below)** ·
    **P4** richer attachment/story handling · **P5** broader secret rotation (AppSecret/DirectLineSecret → KV).
+
+### ✅ P3 — durable conversation store: CODE-COMPLETE on branch `p3-durable-conversation-store` (2026-05-31)
+
+Replaces the dev-grade in-memory cache + thread-per-conversation polling + per-call callback with a **durable
+conversation store (Azure Table Storage, keyed by IGSID) + one polling `BackgroundService`** that rehydrates on
+startup and persists the watermark per poll, plus **retry/backoff** on transient Direct Line + Send failures. Fixes
+the "a restart silently drops in-flight conversations / agent replies" gap. Built design-first (judged design
+workflow → Candidate A), 10 green commits, then an adversarial review (verdict **SHIP** after 3 fixes, all applied).
+**103 tests** (was 44). **Not merged, not deployed.**
+
+- **Branch:** `p3-durable-conversation-store` (off `main`). Commits `d06768c`→`70989d0`. `dotnet test` = 103 green.
+- **Chris's two decisions:** at-least-once delivery + a single-activity dedup guard (rare duplicate beats a silent
+  drop); and the legacy **Line sample channel removed** (resolver is Instagram-only).
+- **▶ To deploy (Chris):** (1) provision a **Storage account** (UK South, `awd-contactcenter-rg`) + grant the App
+  Service **MI `Storage Table Data Contributor`** + set app setting
+  `RelayProcessorSettings__TableServiceUri=https://<account>.table.core.windows.net/` — **without it the bridge
+  silently falls back to in-memory and P3 is inert** (same MI-grant gotcha that bit P1). (2) Forward-slash zip
+  deploy. (3) **Live acceptance:** DM in → **restart the app** → agent reply → reply still arrives. This also proves
+  the one unknown — does Direct Line resume a conversation across the restart gap (DL 3.0.2)? If not, the row is
+  marked **Faulted** + logged Critical (loud, not silent) and a DL-token persist would be added.
+- **Accepted residuals (not bugs):** multi-part-reply duplicate on a crash-before-watermark (single replies are
+  effectively-once); a narrow EndOfConversation close-race; **keep the B1 single-instance** (lease columns dormant).
+  Full notes in [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → *P3 AS-BUILT*.
 
 **Commits (all on `origin/main`; deployed build = `df706c8`):** `b72eba4` P1 token refresh ·
 `a7c6f9b` nlog Console-logging fix · `0798de2` `/api/TokenHealth` diagnostic · `df706c8` P2 App Insights +
