@@ -66,14 +66,14 @@ sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
 4. **Remaining hardening:** **P3** durable conversation store — **✅ code-complete on branch (see P3 block below)** ·
    **P4** richer attachment/story handling · **P5** broader secret rotation (AppSecret/DirectLineSecret → KV).
 
-### ✅ P3 — durable conversation store: CODE-COMPLETE on branch `p3-durable-conversation-store` (2026-05-31)
+### ✅ P3 — durable conversation store: DEPLOYED & LIVE-VERIFIED (2026-05-31)
 
 Replaces the dev-grade in-memory cache + thread-per-conversation polling + per-call callback with a **durable
 conversation store (Azure Table Storage, keyed by IGSID) + one polling `BackgroundService`** that rehydrates on
 startup and persists the watermark per poll, plus **retry/backoff** on transient Direct Line + Send failures. Fixes
 the "a restart silently drops in-flight conversations / agent replies" gap. Built design-first (judged design
 workflow → Candidate A), 10 green commits, then an adversarial review (verdict **SHIP** after 3 fixes, all applied).
-**103 tests** (was 44). **Not merged, not deployed.**
+**103 tests** (was 44). **Merged, deployed, and live-verified in production.**
 
 - **Branch:** `p3-durable-conversation-store` (off `main`). Commits `d06768c`→`70989d0`. `dotnet test` = 103 green.
 - **Chris's two decisions:** at-least-once delivery + a single-activity dedup guard (rare duplicate beats a silent
@@ -84,11 +84,16 @@ workflow → Candidate A), 10 green commits, then an adversarial review (verdict
   it. App setting **`RelayProcessorSettings__TableServiceUri=https://awdigbridgestore.table.core.windows.net/`** set.
   Zip-deployed; the `Conversations` table auto-created on boot (proves Table store active + MI works), app healthy
   (GET-verify 403 on wrong token; platform Requests flowing), **zero errors/criticals on startup**.
-- **▶ Remaining — the one manual live acceptance (needs Chris/Lachy + a D365 agent):** Tester DMs `@alloywheelsdirect`
-  → **restart the App Service** → agent replies in D365 → confirm the reply still reaches the customer on IG. This
-  also proves the single open unknown — does Direct Line resume a conversation by `ConversationId`+watermark across
-  the restart gap on the 3.0.2 SDK? If it 404s, the row is marked **Faulted** + logged Critical (loud, never silent),
-  and only then would a DL-token persist/refresh be added. **Keep the App Service at one B1 instance** (lease dormant).
+- **✅ Live restart + rehydration + Direct-Line-resume PROVEN (2026-05-31, autonomous):** injected an Active row into
+  the `Conversations` table pointing at a real Direct Line conversation (started under the bridge's DL secret; no
+  D365 conversation), **restarted the App Service**, and watched the **post-restart poller rehydrate the row and
+  advance `LastPolledOn` every ~2s with `Status` staying `Active`** (15:28 restart → `LastPolledOn` 15:38:06 and
+  climbing). So the durable store survives a restart, the poller rehydrates from it, and **Direct Line resumes the
+  conversation across the restart gap on the 3.0.2 SDK** (no 404/Faulted) — the #1 open unknown, answered YES. Test
+  row cleaned up (table back to 0 rows). **Keep the App Service at one B1 instance** (lease columns dormant).
+- **▶ Only remaining acceptance — the real-customer outbound leg (needs Chris/Lachy + a D365 agent + a browser):**
+  Tester DMs `@alloywheelsdirect` → **restart the App Service mid-conversation** → agent replies in D365 → confirm the
+  reply lands in the customer's IG inbox. (Couldn't be driven this session — no Playwright/browser MCP connected.)
 - **Deploy gotchas learned this round (don't relearn):** the **first `az webapp deploy` 502'd (transient SCM
   cold-start) — a straight retry succeeded.** The Bash tool's `tar` is **GNU tar (cannot write zip)** → build the
   deploy zip with **Python `zipfile`** (forward-slash arcnames via `.replace(chr(92),'/')`); verify ~60 entries +
@@ -99,6 +104,11 @@ workflow → Candidate A), 10 green commits, then an adversarial review (verdict
 - **Accepted residuals (not bugs):** multi-part-reply duplicate on a crash-before-watermark (single replies are
   effectively-once); a narrow EndOfConversation close-race; **keep the B1 single-instance** (lease columns dormant).
   Full notes in [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → *P3 AS-BUILT*.
+- **Minor robustness note (from the live test; unreachable in prod, optional future guard):** the poller round-trips
+  `CreatedOn` back to the Table on every write, so a row with a pre-1601 timestamp (e.g. `DateTimeOffset.MinValue`)
+  makes every write 400 ("out of range") in a tight 2s loop. The relay always sets `CreatedOn = now`, so no prod path
+  produces it (it only surfaced because the test injected a row without `CreatedOn`). Cheap future hardening:
+  `TableConversationStore.ToEntity` could clamp timestamps to a valid floor.
 
 **Commits (all on `origin/main`; deployed build = `df706c8`):** `b72eba4` P1 token refresh ·
 `a7c6f9b` nlog Console-logging fix · `0798de2` `/api/TokenHealth` diagnostic · `df706c8` P2 App Insights +
