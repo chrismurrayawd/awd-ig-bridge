@@ -104,8 +104,9 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
                     if (!response.IsSuccessStatusCode)
                     {
                         var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                        throw new InvalidOperationException(
-                            $"Instagram Send API returned {(int)response.StatusCode}: {body}");
+                        // Typed so the outbound retry can classify transient (5xx/429) vs terminal (4xx auth) by
+                        // status instead of parsing this message — a dead token (401/190) must fail loudly, not retry.
+                        throw new InstagramSendException((int)response.StatusCode, body);
                     }
                 }
             }

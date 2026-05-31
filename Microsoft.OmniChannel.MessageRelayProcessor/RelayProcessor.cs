@@ -1,214 +1,193 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 
-using Microsoft.Bot.Connector.DirectLine;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Microsoft.OmniChannel.MessageRelayProcessor.Utility;
+using Microsoft.OmniChannel.MessageRelayProcessor.Conversations;
+using Microsoft.OmniChannel.MessageRelayProcessor.DirectLine;
+using Microsoft.Bot.Connector.DirectLine;
 using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.ComponentModel.DataAnnotations;
 using System.Threading;
 using System.Threading.Tasks;
-using System.ComponentModel.DataAnnotations;
 
 namespace Microsoft.OmniChannel.MessageRelayProcessor
 {
     /// <summary>
-    /// Connector Service that connects an Adapter to Direct Line Bot to send/receive activities
+    /// Inbound side of the relay: ensures a durable conversation row exists for the sender (starting a Direct Line
+    /// conversation the first time) and posts the inbound activity to Direct Line. Stateless and durable — the old
+    /// static in-memory cache, the per-conversation polling thread, and the per-call callback are gone; replies are
+    /// delivered by <see cref="ConversationPollingService"/> reading the same <see cref="IConversationStore"/>.
+    /// Registered as a singleton (it holds no per-request state); the shared <see cref="IDirectLineGateway"/> is
+    /// bound only to the secret, so one instance serves every conversation.
     /// </summary>
     public class RelayProcessor : IRelayProcessor
     {
-        private readonly IOptions<RelayProcessorConfiguration> _relayProcessorConfiguration;
+        private readonly IConversationStore _store;
+        private readonly IDirectLineGateway _gateway;
+        private readonly TimeProvider _timeProvider;
+        private readonly ILogger<RelayProcessor> _logger;
 
-        /// <summary>
-        /// Inject Message Relay Processor Configuration Settings
-        /// </summary>
-        /// <param name="relayProcessorConfiguration">Message Relay Processor Instance</param>
-        public RelayProcessor(IOptions<RelayProcessorConfiguration> relayProcessorConfiguration)
+        public RelayProcessor(
+            IConversationStore store,
+            IDirectLineGateway gateway,
+            IOptions<RelayProcessorConfiguration> relayProcessorConfiguration,
+            TimeProvider timeProvider,
+            ILogger<RelayProcessor> logger = null)
         {
-            _relayProcessorConfiguration = relayProcessorConfiguration ?? throw new ArgumentNullException(nameof(relayProcessorConfiguration));
+            _store = store ?? throw new ArgumentNullException(nameof(store));
+            _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+            _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+            _logger = logger ?? NullLogger<RelayProcessor>.Instance;
 
-            if (string.IsNullOrWhiteSpace(_relayProcessorConfiguration.Value?.DirectLineSecret))
+            if (relayProcessorConfiguration == null)
             {
-                throw new MissingFieldException(nameof(RelayProcessorConfiguration.DirectLineSecret));
+                throw new ArgumentNullException(nameof(relayProcessorConfiguration));
             }
 
-            if (string.IsNullOrWhiteSpace(_relayProcessorConfiguration.Value?.BotHandle))
+            // The Direct Line secret is consumed by the gateway factory and BotHandle by the poller; the relay
+            // itself only needs the store + gateway. Keep BotHandle validated here so a misconfig still surfaces
+            // at startup rather than at first reply.
+            if (string.IsNullOrWhiteSpace(relayProcessorConfiguration.Value?.BotHandle))
             {
                 throw new MissingFieldException(nameof(RelayProcessorConfiguration.BotHandle));
             }
-
-            if (string.IsNullOrWhiteSpace(_relayProcessorConfiguration?.Value?.PollingIntervalInMilliseconds))
-            {
-                throw new MissingFieldException(nameof(RelayProcessorConfiguration.PollingIntervalInMilliseconds));
-            }
         }
 
-        /// <summary>
-        /// Post Activity to DirectLine Bot and uses callback Handler to send activities to Adapter
-        /// </summary>
-        /// <param name="inboundActivity">Inbound activity from the channel</param>
-        /// <param name="adapterCallBackHandler">Call back event handler to send outbound activities to Adapter</param>
-        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-        public async Task PostActivityAsync(Activity inboundActivity, EventHandler<IList<Activity>> adapterCallBackHandler)
+        public async Task PostActivityAsync(Activity inboundActivity, string channelType, CancellationToken cancellationToken = default)
         {
             if (inboundActivity == null)
             {
                 throw new ArgumentNullException(nameof(inboundActivity));
             }
 
-            var validationResult = RelayProcessorHelper.Validate(inboundActivity);
+            if (string.IsNullOrWhiteSpace(channelType))
+            {
+                throw new ArgumentException("Channel type must be provided.", nameof(channelType));
+            }
 
+            var validationResult = RelayProcessorHelper.Validate(inboundActivity);
             if (!validationResult.IsValid)
             {
                 throw new ValidationException(string.Join(" ; ", validationResult.BrokenRules));
             }
 
-            if (!ActiveConversationCache.ActiveConversations.ContainsKey(inboundActivity.From.Id))
-            {
-                await InitiateConversation(inboundActivity, adapterCallBackHandler).ConfigureAwait(false);
-            }
+            var igsid = inboundActivity.From.Id;
+            var row = await EnsureConversationAsync(channelType, igsid, cancellationToken).ConfigureAwait(false);
 
-            await SendActivityToBotAsync(inboundActivity).ConfigureAwait(false);
+            await _gateway.PostActivityAsync(row.ConversationId, inboundActivity, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Relayed inbound activity to Direct Line conversation {ConversationId} ({Channel}/{Igsid}).", row.ConversationId, channelType, igsid);
+
+            await BumpLastActivityAsync(channelType, igsid, cancellationToken).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Send the activity to the bot using Direct Line client
+        /// Return the Active conversation row for the sender, creating one (and a Direct Line conversation) if there
+        /// is none, or reactivating a previously-closed row for a returning customer. The insert-if-absent create
+        /// resolves a race between two concurrent inbound webhooks to exactly one winner.
         /// </summary>
-        /// <param name="inboundActivity">Inbound message from Aggregator/Channel</param>
-        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-        private static async Task SendActivityToBotAsync(Activity inboundActivity)
+        private async Task<ConversationRow> EnsureConversationAsync(string channelType, string igsid, CancellationToken cancellationToken)
         {
-            if (!ActiveConversationCache.ActiveConversations.TryGetValue(inboundActivity.From.Id,
-                out var conversationContext))
+            var existing = await _store.GetAsync(channelType, igsid, cancellationToken).ConfigureAwait(false);
+            if (existing != null && existing.Status == ConversationStatus.Active)
             {
-                throw new KeyNotFoundException($"No active conversation found for {inboundActivity.From.Id}");
+                return existing;
             }
 
-            await conversationContext.DirectLineClient.Conversations.PostActivityAsync(
-                conversationContext.Conversation.ConversationId, inboundActivity).ConfigureAwait(false);
-        }
+            // No active conversation — start a fresh Direct Line conversation for this sender.
+            var conversationId = await _gateway.StartConversationAsync(cancellationToken).ConfigureAwait(false);
+            var now = _timeProvider.GetUtcNow();
 
-        /// <summary>
-        /// Initiate Conversation with Direct Line Bot
-        /// </summary>
-        /// <param name="inboundActivity">Inbound message from Aggregator/Channel</param>
-        /// <param name="adapterCallBackHandler">Call Back to send activities to Messaging API</param>
-        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-        private async Task InitiateConversation(Activity inboundActivity, EventHandler<IList<Activity>> adapterCallBackHandler)
-        {
-            var directLineConversation = new DirectLineConversation
+            if (existing == null)
             {
-                DirectLineClient = new DirectLineClient(_relayProcessorConfiguration.Value.DirectLineSecret)
-            };
-
-            // Start a conversation with Direct Line Bot
-            directLineConversation.Conversation = await directLineConversation.DirectLineClient.Conversations.
-                StartConversationAsync().ConfigureAwait(false);
-
-            if (directLineConversation.Conversation == null)
-            {
-                throw new Exception(
-                    "An error occured while starting the Conversation with direct line. Please validate the direct line secret in the configuration file.");
-            }
-
-            // Adding the Direct Line Conversation object to the lookup dictionary and starting a thread to poll the activities from the direct line bot.
-            if (ActiveConversationCache.ActiveConversations.TryAdd(inboundActivity.From.Id, directLineConversation))
-            {
-                // Starts a new thread to poll the activities from Direct Line Bot
-                new Thread(async () => await PollActivitiesFromBotAsync(
-                    directLineConversation.Conversation.ConversationId, inboundActivity, adapterCallBackHandler).ConfigureAwait(false))
-                .Start();
-            }
-        }
-
-        /// <summary>
-        /// Polling the activities from BOT for the active conversation
-        /// </summary>
-        /// <param name="conversationId">Direct Line Conversation Id</param>
-        /// <param name="inboundActivity">Inbound Activity from Channel/Aggregator</param>
-        /// <param name="lineActivitiesReceived">Call Back to send activities to Messaging API</param>
-        /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-        private async Task PollActivitiesFromBotAsync(string conversationId, Activity inboundActivity, EventHandler<IList<Activity>> lineActivitiesReceived)
-        {
-            if (!int.TryParse(_relayProcessorConfiguration.Value.PollingIntervalInMilliseconds, out var pollingInterval))
-            {
-                throw new FormatException($"Invalid Configuration value of PollingIntervalInMilliseconds: {_relayProcessorConfiguration.Value.PollingIntervalInMilliseconds}");
-            }
-
-            if (!ActiveConversationCache.ActiveConversations.TryGetValue(inboundActivity.From.Id,
-                out var conversationContext))
-            {
-                throw new KeyNotFoundException($"No active conversation found for {inboundActivity.From.Id}");
-            }
-
-            while (true)
-            {
-                var watermark = conversationContext.WaterMark;
-
-                // Retrieve the activity set from the bot.
-                var activitySet = await conversationContext.DirectLineClient.Conversations.
-                    GetActivitiesAsync(conversationId, watermark).ConfigureAwait(false);
-
-                // Set the watermark to the message received
-                watermark = activitySet?.Watermark;
-
-                // Extract the activities sent from our bot.
-                if (activitySet != null)
+                var fresh = NewRow(channelType, igsid, conversationId, now);
+                try
                 {
-                    var activities = (from activity in activitySet.Activities
-                                      where activity.From.Id == _relayProcessorConfiguration.Value.BotHandle
-                                      select activity).ToList();
-
-                    if (activities.Count > 0)
+                    await _store.CreateAsync(fresh, cancellationToken).ConfigureAwait(false);
+                    _logger.LogInformation("Started Direct Line conversation {ConversationId} for {Channel}/{Igsid}.", conversationId, channelType, igsid);
+                    return fresh;
+                }
+                catch (ConversationAlreadyExistsException)
+                {
+                    // Create-race: a concurrent inbound won. Use the winner's conversation; our just-started Direct
+                    // Line conversation becomes an orphan (it ages out server-side and via the stale sweep).
+                    var winner = await _store.GetAsync(channelType, igsid, cancellationToken).ConfigureAwait(false);
+                    if (winner != null && winner.Status == ConversationStatus.Active)
                     {
-                        SendReplyActivity(activities, inboundActivity, lineActivitiesReceived);
+                        _logger.LogInformation("Conversation create-race for {Channel}/{Igsid}; using the winning conversation {ConversationId}.", channelType, igsid, winner.ConversationId);
+                        return winner;
                     }
 
-                    // Update Watermark
-                    ActiveConversationCache.ActiveConversations[inboundActivity.From.Id].WaterMark = watermark;
+                    existing = winner; // very rare: winner ended between create and re-read — reactivate below.
+                }
+            }
 
-                    if (activities.Exists(a => a.Type == ActivityTypes.EndOfConversation))
-                    {
-                        if (ActiveConversationCache.ActiveConversations.TryRemove(inboundActivity.From.Id, out _))
-                        {
-                            // net8: Thread.Abort is unsupported (throws PlatformNotSupportedException).
-                            // Returning ends the polling loop for this conversation, which is the original intent.
-                            return;
-                        }
-                    }
+            // Returning customer (previous row Ended/Faulted) or the rare race re-read: reactivate the row with the
+            // new Direct Line conversation, ETag-guarded so a concurrent writer is never clobbered.
+            if (existing != null)
+            {
+                var reactivated = existing.Clone();
+                reactivated.ConversationId = conversationId;
+                reactivated.WaterMark = null;
+                reactivated.LastDeliveredActivityId = null;
+                reactivated.Status = ConversationStatus.Active;
+                reactivated.LastPolledOn = now;
+                reactivated.LastInboundOrReplyOn = now;
+
+                if (await _store.TryUpdateAsync(reactivated, cancellationToken).ConfigureAwait(false))
+                {
+                    _logger.LogInformation("Reactivated conversation for {Channel}/{Igsid} with new Direct Line conversation {ConversationId}.", channelType, igsid, conversationId);
+                    return reactivated;
                 }
 
-                await Task.Delay(TimeSpan.FromMilliseconds(pollingInterval)).ConfigureAwait(false);
+                var current = await _store.GetAsync(channelType, igsid, cancellationToken).ConfigureAwait(false);
+                if (current != null && current.Status == ConversationStatus.Active)
+                {
+                    return current;
+                }
+
+                return reactivated; // best effort: inbound still posts to a live Direct Line conversation.
             }
+
+            // Degenerate double-create-race (both losers) — return an unpersisted fresh row so the inbound still
+            // reaches a live Direct Line conversation. Practically unreachable.
+            return NewRow(channelType, igsid, conversationId, now);
         }
 
         /// <summary>
-        /// Send the reply to Adapter
+        /// Re-read and bump <see cref="ConversationRow.LastInboundOrReplyOn"/> so the stale sweep treats the
+        /// conversation as live. Best-effort with one retry on an ETag race (a missed bump only risks a slightly
+        /// early sweep of a conversation that then goes quiet).
         /// </summary>
-        /// <param name="directLineActivities">Activity Received from the DL Bot</param>
-        /// <param name="inboundActivity">Inbound Activity</param>
-        /// <param name="adapterCallBackHandler">Call Back to send activities to Messaging API</param>
-        private void SendReplyActivity(List<Activity> directLineActivities, Activity inboundActivity, EventHandler<IList<Activity>> adapterCallBackHandler)
+        private async Task BumpLastActivityAsync(string channelType, string igsid, CancellationToken cancellationToken)
         {
-            if (directLineActivities == null)
+            for (var attempt = 0; attempt < 2; attempt++)
             {
-                throw new ArgumentNullException(nameof(directLineActivities));
+                var row = await _store.GetAsync(channelType, igsid, cancellationToken).ConfigureAwait(false);
+                if (row == null || row.Status != ConversationStatus.Active)
+                {
+                    return;
+                }
+
+                row.LastInboundOrReplyOn = _timeProvider.GetUtcNow();
+                if (await _store.TryUpdateAsync(row, cancellationToken).ConfigureAwait(false))
+                {
+                    return;
+                }
             }
-
-            if (inboundActivity == null)
-            {
-                throw new ArgumentNullException(nameof(inboundActivity));
-            }
-
-            // Update Reply Id and Channel Id of each outbound activities based on Inbound activity
-            directLineActivities.ForEach(a =>
-            {
-                a.ReplyToId = inboundActivity.From.Id;
-                a.ChannelId = inboundActivity.Id;
-            });
-
-            // Invoke Call Back event to send outbound activities to Adapter
-            adapterCallBackHandler?.Invoke(this, directLineActivities);
         }
+
+        private static ConversationRow NewRow(string channelType, string igsid, string conversationId, DateTimeOffset now) =>
+            new ConversationRow
+            {
+                ChannelType = channelType,
+                Igsid = igsid,
+                ConversationId = conversationId,
+                WaterMark = null,
+                Status = ConversationStatus.Active,
+                CreatedOn = now,
+                LastPolledOn = now,
+                LastInboundOrReplyOn = now,
+            };
     }
 }

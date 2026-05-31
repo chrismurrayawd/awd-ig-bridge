@@ -1,6 +1,6 @@
 # Prod-hardening (plan step 8) — phased implementation plan
 
-**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-05-31):** ✅ **P1 + P2 DONE & deployed** · P3–P5 remaining.
+**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-05-31):** ✅ **P1 + P2 DONE & deployed** · **P3 CODE-COMPLETE on branch `p3-durable-conversation-store` (103 tests green, NOT deployed)** · P4–P5 remaining.
 **Context:** the bridge is LIVE in production (see [`RESUME.md`](../RESUME.md) → *Current state*). It was built
 dev-grade on purpose; this plan hardens it. Built **P1-first** because P1 has a hard external deadline.
 
@@ -127,7 +127,105 @@ app setting), outbound still works, and a refresh failure is **logged/alerted** 
   request + response status**; **token-refresh events + ANY Send-API/token failure**.
 - **Acceptance:** a signature failure and a full round-trip are both queryable in App Insights within ~1 min.
 
-## P3 — Durable conversation store (replace in-memory cache + polling)  ◀ NEXT — design brief below
+## P3 — Durable conversation store (replace in-memory cache + polling)  ◀ CODE-COMPLETE 2026-05-31 (branch, not deployed)
+
+### ✅ AS-BUILT (2026-05-31) — code-complete on branch `p3-durable-conversation-store`, awaiting Chris's deploy go-ahead
+
+Built per the locked design below, in 10 commit-sized steps (`dotnet test` green at every commit; **103 tests**, was
+44), then an adversarial review (5 lenses → verify → synthesize, verdict **SHIP** after 3 fixes — all applied).
+**Not merged, not deployed.** Branch off `main`.
+
+**What shipped:** Line channel removed → `IConversationStore` + `InMemoryConversationStore` → `IDirectLineGateway`
+seam → `RetryExecutor`/`TransientFaultClassifier` + `ResilientDirectLineGateway` + typed `InstagramSendException`
+→ `IOutboundActivitySink`/`OutboundSinkResolver` + gutted stateless `RelayProcessor` (deleted `ActiveConversationCache`
++ `DirectLineConversation` + the polling `Thread`) → `ConversationPollingService` (rehydration loop) →
+`TableConversationStore` + `ITableClientAdapter` → DI wiring + 3 smoke tests → adversarial-review fixes.
+The headline acceptance is proven by a unit test (seed an Active row as if it survived a restart, run one poll tick,
+the agent reply reaches the sink addressed to the IGSID — rehydration *is* the steady-state loop).
+
+**▶ Deploy-time prerequisites (Chris drives; bridge falls back to in-memory + config until done):**
+0. **PR open:** [#1](https://github.com/chrismurrayawd/awd-ig-bridge/pull/1) (`p3-durable-conversation-store` → `main`).
+1. **✅ DONE 2026-05-31 — Storage provisioned:** account **`awdigbridgestore`** (UK South, `awd-contactcenter-rg`,
+   StorageV2/TLS1.2/no-public-blob); the App Service system-assigned MI `b3429ddd-…` has **`Storage Table Data
+   Contributor`** on it (same MI as P1's Key Vault). The `Conversations` table auto-creates on first P3 boot. **Still
+   to do (the activation switch, deferred to deploy):** set `RelayProcessorSettings__TableServiceUri=https://awdigbridgestore.table.core.windows.net/`
+   — until set, the bridge silently uses `InMemoryConversationStore` (restarts still drop conversations — P3 inert).
+2. **Deploy** via the forward-slash zip incantation, then run the **#1 live acceptance**: DM in → **restart the app**
+   → agent reply → reply still reaches the customer. This also proves the one genuine unknown — does Direct Line
+   resume a conversation by `ConversationId`+watermark across the restart gap on the old `Bot.Connector.DirectLine 3.0.2`
+   SDK? If it 404s, the row is marked **Faulted** + logged Critical (visible, never silent); only then would a
+   DL-token persist/refresh be needed.
+
+**Accepted residuals (documented, not bugs — confirmed by the review):**
+- **At-least-once**: a crash between the `LastDeliveredActivityId` write and the watermark write can re-deliver the
+  non-last activities of a *multi-part* reply next tick (duplicate, never a drop). Single-activity replies are
+  effectively-once. Full per-activity ledger deferred (Chris's call).
+- **EndOfConversation close-race (TOCTOU, single-instance)**: an inbound read as Active can post onto a row the poller
+  concurrently marks Ended, stranding that inbound until the customer's next message. Narrow window; the 404/Faulted
+  sub-case is *not* silent (the post also 404s → throws to the webhook → Meta retries). Defensive fix deferred.
+- **Single-instance assumption**: `OwnerLease`/`LeaseExpiry` columns exist but are dormant — **keep the B1 at one
+  instance** until a lease CAS is wired (two pollers would double-poll/double-send). A defensive `ConversationId`
+  guard in `UpdateRowAsync` was added as cheap scale-out insurance.
+
+**Recommended test backfill before Live-mode customer traffic (not gating the Testers trial):** `_inFlight` overlap,
+`UpdateRowAsync` ETag-conflict/exhaustion, a real Create→ListActive Table round-trip (integration), create-race at the
+store level.
+
+### 🔒 LOCKED DESIGN (2026-05-31) — chosen via a judged design workflow; design brief below is the source spec
+
+Three candidate architectures were raced through a design workflow (3 architects → 3-lens judge panel →
+synthesis). **Candidate A — "stateless relay + single-loop poller + DI-resolved sink" — won all three lenses**
+(restart-correctness 9, concurrency/ops 8, testability 8). Chris locked it 2026-05-31 with two decisions.
+
+**The architecture (mirrors the shipped P1 store/seam/BackgroundService patterns exactly):**
+- **Sink (kills the un-persistable closure):** delete the per-call `EventHandler<IList<Activity>>`. New
+  `IOutboundActivitySink` + `OutboundSinkResolver` delegate **declared in the relay project** (zero new project
+  refs — respects the one-way `adapter→relay` edge), resolved by the row's persisted `ChannelType`.
+  `InstagramAdapter` implements the sink by forwarding to its existing `ProcessOutboundActivitiesAsync`.
+- **Poller:** ONE `ConversationPollingService : BackgroundService` (shaped like `InstagramTokenRefreshService`).
+  Each tick lists Active rows and polls them with **bounded-parallel fan-out** (`SemaphoreSlim`) + a per-IGSID
+  in-flight guard. **Rehydration IS the steady-state loop** — no separate restart-recovery code path. The raw
+  `new Thread` and the static `ActiveConversationCache` are deleted.
+- **Store:** `IConversationStore` + `TableConversationStore` (Azure.Data.Tables, managed identity — same MI as
+  P1) + `InMemoryConversationStore` fallback (so build/tests need no Azure). Behind a thin `ITableClientAdapter`
+  seam (the `ISecretClientAdapter` twin). PK=`ChannelType`, RK=`IGSID`. Columns: `ConversationId`, `WaterMark`,
+  `Status` (Active|Ended|Faulted), `ChannelType`, `CreatedOn`, `LastPolledOn`, `LastInboundOrReplyOn` (the idle
+  signal for the sweep), `LastDeliveredActivityId` (dedup guard), `OwnerLease`+`LeaseExpiry` (dormant; future
+  scale-out), ETag.
+- **Direct Line seam:** `IDirectLineClient` + `DirectLineActivitySet` DTO + `IDirectLineClientFactory` +
+  `DirectLineClientAdapter` (wraps the SDK) + `ResilientDirectLineClient` retry decorator — poller testable with
+  a `FakeDirectLineClient`, no live Direct Line.
+- **Delivery ordering:** **deliver to Instagram FIRST, persist the watermark AFTER** (ETag CAS). Crash before
+  delivery → re-delivered next tick (never lost). Crash after IG-200 before commit → `LastDeliveredActivityId`
+  guard skips the re-send for the common single-activity reply.
+- **Retry/backoff:** hand-rolled bounded exponential backoff (no Polly — matches the existing hand-rolled
+  refresher). Transient (5xx/429/timeout) retries; terminal (401/403/400) logs **loud** via P2 App Insights and
+  does NOT retry into silence. Needs a typed `InstagramSendException` (status no longer buried in a message
+  string).
+- **Stale cleanup:** TTL sweep inside the same poller on `LastInboundOrReplyOn`, default 48h (D365
+  `msdyn_autocloseafterinactivity`).
+- **Concurrency:** ETag optimistic concurrency; create-race resolved by insert-if-absent (**409**, correctly).
+  Keep B1 **single-instance** until the dormant lease is wired.
+
+**Chris's two decisions (2026-05-31):**
+1. **Delivery guarantee = at-least-once + the `LastDeliveredActivityId` single-activity dedup guard** (a rare
+   duplicate beats a silent drop; full per-activity ledger deferred).
+2. **Remove the Line sample channel entirely** (project + controller + registrations) — the resolver becomes
+   Instagram-only, rather than updating Line to the new contract.
+
+**Two deploy-time items (do NOT block the code; InMemory + loud-Faulted fallback cover them):**
+- **#1 step-8 live acceptance:** prove Direct Line resumes a conversation by `ConversationId`+watermark across a
+  restart on the old `Bot.Connector.DirectLine 3.0.2` SDK. If it 404s, GetActivities marks the row **Faulted**
+  and logs Critical (visible, never silent); a DL-token persist/refresh would be added only if the live test fails.
+- **Provision** a Storage account (UK South) + grant the App Service MI **Storage Table Data Contributor** + set
+  `RelayProcessorSettings:TableServiceUri` — the same easy-to-forget MI grant that bit P1.
+
+**Build order (each commit keeps `dotnet test` green; baseline 44):** remove Line → test doubles → store +
+in-memory → Direct Line seam → resilience + typed send exception → sink + gut RelayProcessor (new signature,
+delete static cache/DirectLineConversation) → polling BackgroundService (+ headline rehydration test) →
+Table store + mapping tests → wire Program.cs/config/packages → adversarial review → docs.
+
+---
 
 **Goal:** a process restart must not drop in-flight conversations. Today an agent reply that arrives after a
 restart is **silently lost** — which is why re-testing outbound this whole project needed a *fresh* DM each time.
