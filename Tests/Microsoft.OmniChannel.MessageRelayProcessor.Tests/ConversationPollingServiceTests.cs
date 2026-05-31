@@ -114,6 +114,25 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor.Tests
         }
 
         [Fact]
+        public async Task RunOnce_MultiActivityReply_DeliversAllInOrder_LastDeliveredIsLast()
+        {
+            var store = new InMemoryConversationStore();
+            await SeedActiveAsync(store, "igsid-1", "conv-1", watermark: "wm0");
+            var gateway = new FakeDirectLineGateway();
+            gateway.EnqueueActivities(new[] { Bot("first", "a1"), Bot("second", "a2") }, "wm1");
+            var sink = new RecordingSink();
+
+            await BuildPoller(store, gateway, sink).RunOnceAsync(CancellationToken.None);
+
+            Assert.Equal(2, sink.Received.Count);
+            Assert.Equal("first", sink.Received[0].Text);
+            Assert.Equal("second", sink.Received[1].Text);
+            var row = await store.GetAsync(Channel, "igsid-1", CancellationToken.None);
+            Assert.Equal("a2", row.LastDeliveredActivityId);
+            Assert.Equal("wm1", row.WaterMark);
+        }
+
+        [Fact]
         public async Task RunOnce_SinkFails_WatermarkNotAdvanced_AndLoggedLoud()
         {
             var store = new InMemoryConversationStore();

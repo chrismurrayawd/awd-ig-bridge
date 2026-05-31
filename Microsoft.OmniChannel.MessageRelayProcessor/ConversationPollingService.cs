@@ -227,10 +227,26 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor
                     reply.ChannelId = row.ConversationId;
                 }
 
-                // DELIVER FIRST. A terminal sink failure throws here → caught by PollGuardedAsync → the watermark is
-                // NOT advanced, so the reply is retried next tick rather than silently lost.
+                // DELIVER FIRST. On any delivery failure the watermark is NOT advanced, so the reply is retried
+                // next tick rather than silently lost. Log it as a DISTINCT, actionable outbound signal (separate
+                // from a GetActivities poll failure) so a dead token / channel outage is obvious in App Insights.
                 var sink = _sinkResolver(row.ChannelType);
-                await sink.SendActivitiesAsync(replies, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await sink.SendActivitiesAsync(replies, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw; // shutdown — let the host stop; watermark un-advanced, re-delivered on next start
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Instagram OUTBOUND delivery FAILED for {Channel}/{Igsid} — agent reply NOT delivered; watermark left un-advanced, will retry next tick. If this repeats, the access token may be dead (see token refresh) or the channel is down.",
+                        row.ChannelType, row.Igsid);
+                    return;
+                }
 
                 // Record the last delivered activity id BEFORE advancing the watermark, so a crash before the
                 // watermark write still lets the dedup guard skip the re-returned activity (near-once single reply).
@@ -287,6 +303,14 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor
                 if (fresh == null)
                 {
                     return null; // row gone (ended/swept by another writer) — nothing to persist
+                }
+
+                if (!string.Equals(fresh.ConversationId, current.ConversationId, StringComparison.Ordinal))
+                {
+                    // The row was superseded by a different Direct Line conversation (e.g. a reactivation by another
+                    // writer). Do NOT re-apply this poll's mutation onto a different conversation. Cannot happen on
+                    // the single instance (reactivation only touches non-Active rows); a guard against scale-out.
+                    return null;
                 }
 
                 current = fresh;

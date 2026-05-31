@@ -88,11 +88,27 @@ namespace Microsoft.OmniChannel.Adapters.Service
                     tableName = "Conversations";
                 }
 
-                services.AddSingleton<ITableClientAdapter>(_ =>
+                services.AddSingleton<ITableClientAdapter>(serviceProvider =>
                 {
                     var serviceClient = new TableServiceClient(new Uri(tableServiceUri), new DefaultAzureCredential());
                     var tableClient = serviceClient.GetTableClient(tableName);
-                    tableClient.CreateIfNotExists();
+                    try
+                    {
+                        tableClient.CreateIfNotExists();
+                    }
+                    catch (Exception ex)
+                    {
+                        // This runs eagerly during host startup (the poller hosted service resolves the store). A raw
+                        // throw here takes the whole bridge offline with no signal — emit a loud, actionable cause
+                        // first (the most likely culprit is the missing managed-identity role), then fail fast.
+                        serviceProvider.GetService<ILoggerFactory>()?
+                            .CreateLogger("ConversationStore")
+                            .LogCritical(ex,
+                                "Failed to provision the conversations table '{Table}' at {Uri}. Verify the App Service managed identity has the 'Storage Table Data Contributor' role on the storage account.",
+                                tableName, tableServiceUri);
+                        throw;
+                    }
+
                     return new TableClientAdapter(tableClient);
                 });
                 services.AddSingleton<IConversationStore, TableConversationStore>();

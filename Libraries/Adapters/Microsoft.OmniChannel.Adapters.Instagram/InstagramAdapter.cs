@@ -88,14 +88,28 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// IG blip (429/5xx) is ridden out, while a terminal failure (dead token = 4xx) throws so the poller leaves
         /// the watermark un-advanced and logs loudly — the reply is retried next tick rather than silently dropped.
         /// </summary>
-        public Task SendActivitiesAsync(IList<Activity> activities, CancellationToken cancellationToken)
+        public async Task SendActivitiesAsync(IList<Activity> activities, CancellationToken cancellationToken)
         {
+            if (activities == null || activities.Count == 0)
+            {
+                throw new ArgumentNullException(nameof(activities));
+            }
+
             var retry = new RetryExecutor(new RetryOptions(), _logger);
-            return retry.ExecuteAsync(
-                _ => ProcessOutboundActivitiesAsync(activities),
-                InstagramFaultClassifier.IsTransientSendFault,
-                "Instagram.Send",
-                cancellationToken);
+
+            // Retry EACH activity independently. Retrying the whole batch would re-POST an already-delivered
+            // earlier message when a LATER one hits a transient 429/5xx (burst sends are exactly what provokes 429)
+            // — a deterministic duplicate that the cross-tick dedup guard cannot catch because it happens before
+            // any watermark/LastDeliveredActivityId is written.
+            foreach (var activity in activities)
+            {
+                var single = new[] { activity };
+                await retry.ExecuteAsync(
+                    _ => ProcessOutboundActivitiesAsync(single),
+                    InstagramFaultClassifier.IsTransientSendFault,
+                    "Instagram.Send",
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
 
         /// <summary>

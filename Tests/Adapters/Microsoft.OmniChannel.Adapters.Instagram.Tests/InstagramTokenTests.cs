@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
+using Microsoft.Bot.Connector.DirectLine;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -383,6 +384,41 @@ namespace Microsoft.OmniChannel.Adapters.Instagram.Tests
 
             var ex = await Assert.ThrowsAsync<InstagramSendException>(() => wrapper.SendMessagesAsync(requests));
             Assert.Equal(401, ex.StatusCode);
+        }
+
+        [Fact]
+        public async Task SendActivitiesAsync_PerActivityRetry_DoesNotResendDeliveredEarlierMessage()
+        {
+            // A 2-activity reply where the SECOND message hits a transient 429 once: the FIRST (already delivered)
+            // must NOT be re-POSTed by the retry. Proves the retry unit is a single activity, not the whole batch.
+            var sends = new List<string>();
+            var secondAttempts = 0;
+            var handler = new StubHttpMessageHandler(request =>
+            {
+                var body = request.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                var which = body.Contains("first") ? "first" : "second";
+                sends.Add(which);
+                if (which == "second" && ++secondAttempts == 1)
+                {
+                    return Json(HttpStatusCode.TooManyRequests, "{\"error\":{\"code\":4}}");
+                }
+
+                return Json(HttpStatusCode.OK, "{}");
+            });
+            var provider = new Mock<IInstagramTokenProvider>();
+            provider.Setup(p => p.GetTokenAsync(It.IsAny<CancellationToken>())).ReturnsAsync("TKN");
+            var adapter = new InstagramAdapter(new InstagramClientWrapper(Config(), provider.Object, new HttpClient(handler)));
+
+            var activities = new List<Activity>
+            {
+                new Activity { Type = ActivityTypes.Message, Id = "a0", Text = "first", ReplyToId = "igsid-1" },
+                new Activity { Type = ActivityTypes.Message, Id = "a1", Text = "second", ReplyToId = "igsid-1" },
+            };
+
+            await adapter.SendActivitiesAsync(activities, CancellationToken.None);
+
+            Assert.Equal(1, sends.FindAll(s => s == "first").Count);   // delivered exactly once
+            Assert.Equal(2, sends.FindAll(s => s == "second").Count);  // its own transient retry only
         }
 
         // ---- Test doubles ---------------------------------------------------
