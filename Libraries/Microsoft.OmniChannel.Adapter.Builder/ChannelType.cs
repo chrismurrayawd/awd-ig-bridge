@@ -8,11 +8,6 @@ namespace Microsoft.OmniChannel.Adapter.Builder
     public static class ChannelType
     {
         /// <summary>
-        /// Line
-        /// </summary>
-        public const string Line = "line";
-
-        /// <summary>
         /// Instagram Direct. Also surfaced to D365 as the Activity channelData.channelType.
         /// </summary>
         public const string Instagram = "Instagram";
