@@ -300,9 +300,53 @@ Insights / `/api/TokenHealth`-style health, since the log stream is dead — see
 - Today inbound media/stories degrade to a text placeholder (`InstagramHelper.DescribeAttachments`). Surface image/story
   URLs (or media) to the agent per the IG webhook payload shapes. Lower priority.
 
-## P5 — Secret hygiene
-- Rotate the IG app secret + IG-user token (both handled in plaintext on 2026-05-30) and move **all** secrets
-  (`AppSecret`, `DirectLineSecret`, token) into Key Vault — builds on P1's vault + managed identity.
+## P5 — Secret hygiene  ◀ NEXT (best started in a FRESH session, design-first + adversarial review like P3)
+
+**Goal:** move the two remaining plaintext secrets — `InstagramAdapterSettings:AppSecret` (validates inbound
+`X-Hub-Signature-256`) and `RelayProcessorSettings:DirectLineSecret` (Direct Line) — into Key Vault `awd-ig-bridge-kv`
+(already exists from P1), served via the App Service managed identity, with a **config-fallback** so build/tests need
+no Azure. The IG-user token is already in KV (P1). Then **rotate** the IG app secret + DirectLineSecret (both were
+handled in plaintext on 2026-05-30) and document a rotation runbook.
+
+### What P3/P1 already gave us (makes P5 small)
+- **`ISecretClientAdapter` + `KeyVaultSecretClientAdapter`** (in the Instagram adapter project) already wrap KV via
+  `DefaultAzureCredential`/the MI, with a 404→null seam and unit tests — **reuse this** (or lift it to a shared spot)
+  rather than re-inventing. The MI `b3429ddd-…` already has secret get/set/list on `awd-ig-bridge-kv`.
+- **`DirectLineSecret` has exactly ONE consumption point by design:** `DirectLineGatewayFactory` (it reads
+  `IOptions<RelayProcessorConfiguration>.DirectLineSecret`). P3 built it this way specifically so P5 swaps only the
+  factory's secret source to a KV-backed provider — **zero poller/relay change.**
+- **`AppSecret` is read in `InstagramClientWrapper.ValidateSignature`** (`_configuration.Value.AppSecret`, per inbound
+  webhook). Give it a provider seam (mirror `IInstagramTokenProvider`: load-once-at-startup, cache in memory).
+
+### Recommended approach (confirm in a P5 design workflow, don't assume)
+- A small **`IKeyVaultSecretProvider`** (or reuse the token-store pattern): when `KeyVault:Uri` is set, fetch
+  `AppSecret` + `DirectLineSecret` from KV at startup (cache in memory; they don't auto-expire, so NO background
+  refresher needed — unlike the IG-user token); when empty, **config-fallback** to the app settings (local/tests).
+- **Auto-seed like P1:** if `KeyVault:Uri` is set but a secret is missing, seed it from the current app setting on
+  first boot, then KV is authoritative; delete the plaintext app setting post-seed.
+- **Rotation = update KV + restart** (these secrets don't expire, so no slide-forward refresher). Runbook: AppSecret →
+  Meta app dashboard "Reset" → write new value to KV → restart; DirectLineSecret → Azure Bot → Direct Line channel
+  "regenerate key" → write to KV → restart. A bad AppSecret breaks inbound (403); a bad DirectLineSecret breaks the
+  relay/poller — so verify after each.
+- **No secret in git/logs** (existing guardrail). KV secret names: e.g. `MetaAppSecret`, `DirectLineSecret`.
+
+### Acceptance
+Inbound still validates (signed webhook → 200) and outbound still works with both secrets served from KV (verified via
+a real DM round-trip or the `Conversations`-table-created + inbound-200 signals); build/`dotnet test` green with no
+Azure (config-fallback); a rotation of each secret is performed + verified; the plaintext `AppSecret`/`DirectLineSecret`
+app settings are deleted once KV is authoritative.
+
+### ▶ P5 kickoff prompt (paste into a fresh session)
+> Continue the awd-ig-bridge hardening — do **P5 (secret hygiene)**. P1+P2+P3 are DONE & live (see `RESUME.md`).
+> Read `RESUME.md` in full + `plan/hardening-step8-plan.md` → **P5** (the spec) + the P1 token-store files
+> (`ISecretClientAdapter`/`KeyVaultSecretClientAdapter`/`IInstagramTokenProvider`) + `DirectLineGatewayFactory` +
+> `InstagramClientWrapper`. **Ultracode/workflows:** design-first (a short design workflow for the secret-provider
+> seam + auto-seed + rotation), lock the design with me, implement (keep `dotnet test` green per commit), then an
+> adversarial review (no secret in git/logs, rotation doesn't break inbound/outbound, config-fallback, MI scope).
+> Mirror P1's KV pattern + reuse `ISecretClientAdapter`. **Do NOT deploy without my go-ahead; pushes use SSH.**
+> Deploy gotchas (don't relearn): GNU `tar` can't zip → Python `zipfile` forward-slash; first `az webapp deploy` may
+> 502 on SCM cold-start → retry; `az monitor app-insights query -o table` renders empty → use `-o json`. Keep B1
+> single-instance.
 
 ---
 
