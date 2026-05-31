@@ -1,16 +1,19 @@
 # RESUME — IG → D365 Contact Center bridge
 
-## ✅ Current state (2026-05-31) — LIVE in production; P1 + P2 DONE; **P3 code-complete on a branch (not deployed)**
+## ✅ Current state (2026-05-31) — LIVE in production; P1 + P2 + **P3 DONE & DEPLOYED**
 
 The bridge is **live and serving real customer Instagram DMs in both directions** (inbound IG → D365
 agent workspace; agent reply → IG), on the Linux App Service **`awd-ig-bridge`**. It runs under Meta
 **Standard Access** as a first-party app on AWD's own Instagram account — **no App Review, no Advanced
 Access, and no Tech Provider are needed** (do NOT submit App Review / do NOT become a Tech Provider).
 
-> **P3 (durable conversation store) is CODE-COMPLETE on branch `p3-durable-conversation-store` — built, reviewed,
-> 103 tests green, but NOT merged and NOT deployed (awaiting Chris's go-ahead).** See the dedicated P3 block below
-> (`### ✅ P3 …`) and [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → *P3 AS-BUILT* for the deploy
-> prerequisites (a Storage account + the managed-identity Table role) and the live-acceptance test.
+> **P3 (durable conversation store) is DEPLOYED & verified in production (2026-05-31).** PR
+> [#1](https://github.com/chrismurrayawd/awd-ig-bridge/pull/1) merged to `main`; the new build is live and booted
+> with the **Table-backed durable store** (the `Conversations` table in storage account `awdigbridgestore` was
+> auto-created on startup via the managed identity — hard proof the durable store is active and NOT the in-memory
+> fallback; zero errors/criticals on boot). The bridge now survives a restart without dropping in-flight
+> conversations. See the P3 block below (`### ✅ P3 …`). **One manual acceptance remains** (a real Tester DM →
+> restart → agent reply round-trip — needs Chris/Lachy + a D365 agent).
 
 **Host:** ASP.NET Core Web API on **Linux Azure App Service `awd-ig-bridge`** (RG `awd-contactcenter-rg`,
 sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
@@ -75,17 +78,24 @@ workflow → Candidate A), 10 green commits, then an adversarial review (verdict
 - **Branch:** `p3-durable-conversation-store` (off `main`). Commits `d06768c`→`70989d0`. `dotnet test` = 103 green.
 - **Chris's two decisions:** at-least-once delivery + a single-activity dedup guard (rare duplicate beats a silent
   drop); and the legacy **Line sample channel removed** (resolver is Instagram-only).
-- **PR:** [#1](https://github.com/chrismurrayawd/awd-ig-bridge/pull/1) (`p3-durable-conversation-store` → `main`).
-- **✅ Storage provisioned 2026-05-31:** account **`awdigbridgestore`** (uksouth, `awd-contactcenter-rg`, StorageV2,
-  TLS1_2, no public blob); the App Service MI `b3429ddd-…` has **`Storage Table Data Contributor`** on it. The
-  `Conversations` table is auto-created by the app (`CreateIfNotExists`) on first P3 boot.
-- **▶ To deploy (Chris's go-ahead):** (1) set app setting
-  `RelayProcessorSettings__TableServiceUri=https://awdigbridgestore.table.core.windows.net/` — **the activation
-  switch; until it's set the bridge silently uses in-memory and P3 is inert.** Deliberately NOT set yet (it restarts
-  the live app and the current build ignores it) — flip it together with the deploy. (2) Forward-slash zip deploy of
-  the branch. (3) **Live acceptance:** DM in → **restart the app** → agent reply → reply still arrives. This also
-  proves the one unknown — does Direct Line resume a conversation across the restart gap (DL 3.0.2)? If not, the row
-  is marked **Faulted** + logged Critical (loud, not silent) and a DL-token persist would be added.
+- **PR:** [#1](https://github.com/chrismurrayawd/awd-ig-bridge/pull/1) merged to `main` (merge `1ad6c7a`).
+- **✅ DEPLOYED & verified 2026-05-31.** Storage account **`awdigbridgestore`** (uksouth, `awd-contactcenter-rg`,
+  StorageV2/TLS1.2/no-public-blob) + the App Service MI `b3429ddd-…` granted **`Storage Table Data Contributor`** on
+  it. App setting **`RelayProcessorSettings__TableServiceUri=https://awdigbridgestore.table.core.windows.net/`** set.
+  Zip-deployed; the `Conversations` table auto-created on boot (proves Table store active + MI works), app healthy
+  (GET-verify 403 on wrong token; platform Requests flowing), **zero errors/criticals on startup**.
+- **▶ Remaining — the one manual live acceptance (needs Chris/Lachy + a D365 agent):** Tester DMs `@alloywheelsdirect`
+  → **restart the App Service** → agent replies in D365 → confirm the reply still reaches the customer on IG. This
+  also proves the single open unknown — does Direct Line resume a conversation by `ConversationId`+watermark across
+  the restart gap on the 3.0.2 SDK? If it 404s, the row is marked **Faulted** + logged Critical (loud, never silent),
+  and only then would a DL-token persist/refresh be added. **Keep the App Service at one B1 instance** (lease dormant).
+- **Deploy gotchas learned this round (don't relearn):** the **first `az webapp deploy` 502'd (transient SCM
+  cold-start) — a straight retry succeeded.** The Bash tool's `tar` is **GNU tar (cannot write zip)** → build the
+  deploy zip with **Python `zipfile`** (forward-slash arcnames via `.replace(chr(92),'/')`); verify ~60 entries +
+  no backslashes. **`az monitor app-insights query -o table` renders EMPTY even when rows exist — use `-o json`** (+
+  `ConvertFrom-Json`; do NOT pipe az → python in PS 5.1, the pipe drops the data). This app's App Insights filters to
+  **Warning+**, so Information startup logs (e.g. "polling service started") don't appear — use the table-created
+  signal + platform Requests metric to confirm a healthy boot.
 - **Accepted residuals (not bugs):** multi-part-reply duplicate on a crash-before-watermark (single replies are
   effectively-once); a narrow EndOfConversation close-race; **keep the B1 single-instance** (lease columns dormant).
   Full notes in [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → *P3 AS-BUILT*.
