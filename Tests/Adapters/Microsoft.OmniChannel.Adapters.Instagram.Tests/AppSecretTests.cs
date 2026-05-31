@@ -1,11 +1,15 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -179,6 +183,82 @@ namespace Microsoft.OmniChannel.Adapters.Instagram.Tests
             await provider.GetAppSecretAsync();
 
             Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("SUPER_SECRET_VALUE"));
+        }
+
+        // ---- ValidateSignatureAsync reads the secret from the provider --------
+
+        [Fact]
+        public async Task ValidateSignatureAsync_ValidSignature_ReturnsTrue()
+        {
+            var body = Encoding.UTF8.GetBytes("{\"object\":\"instagram\"}");
+            var provider = new Mock<IAppSecretProvider>();
+            provider.Setup(p => p.GetAppSecretAsync(It.IsAny<CancellationToken>())).ReturnsAsync("the-secret");
+            var wrapper = WrapperWith(provider.Object);
+
+            Assert.True(await wrapper.ValidateSignatureAsync(body, RequestWithSignature(Sign(body, "the-secret"))));
+        }
+
+        [Fact]
+        public async Task ValidateSignatureAsync_WrongSecret_ReturnsFalse()
+        {
+            var body = Encoding.UTF8.GetBytes("{\"object\":\"instagram\"}");
+            var provider = new Mock<IAppSecretProvider>();
+            provider.Setup(p => p.GetAppSecretAsync(It.IsAny<CancellationToken>())).ReturnsAsync("the-secret");
+            var wrapper = WrapperWith(provider.Object);
+
+            // The body is signed with a DIFFERENT secret than the provider yields → mismatch.
+            Assert.False(await wrapper.ValidateSignatureAsync(body, RequestWithSignature(Sign(body, "other-secret"))));
+        }
+
+        [Fact]
+        public async Task ValidateSignatureAsync_BlankSecret_ReturnsFalse_FailClosed()
+        {
+            var body = Encoding.UTF8.GetBytes("{}");
+            var provider = new Mock<IAppSecretProvider>();
+            provider.Setup(p => p.GetAppSecretAsync(It.IsAny<CancellationToken>())).ReturnsAsync((string)null);
+            var wrapper = WrapperWith(provider.Object);
+
+            // No secret available → fail closed (→ 403), must NOT throw.
+            Assert.False(await wrapper.ValidateSignatureAsync(body, RequestWithSignature("sha256=deadbeef")));
+        }
+
+        [Fact]
+        public void Wrapper_DoesNotThrow_WhenConfigAppSecretEmpty()
+        {
+            // The ctor AppSecret non-empty throw was dropped (the provider owns the secret now); IgBusinessId still required.
+            var tokenProvider = new Mock<IInstagramTokenProvider>();
+            var appSecretProvider = new Mock<IAppSecretProvider>();
+
+            var ex = Record.Exception(() =>
+                new InstagramClientWrapper(Config(c => c.AppSecret = null), tokenProvider.Object, appSecretProvider.Object, new HttpClient()));
+
+            Assert.Null(ex);
+        }
+
+        private static InstagramClientWrapper WrapperWith(IAppSecretProvider appSecretProvider)
+        {
+            var tokenProvider = new Mock<IInstagramTokenProvider>();
+            return new InstagramClientWrapper(Config(), tokenProvider.Object, appSecretProvider, new HttpClient());
+        }
+
+        private static HttpRequest RequestWithSignature(string signature)
+        {
+            var context = new DefaultHttpContext();
+            context.Request.Headers[InstagramClientWrapper.SignatureHeaderName] = signature;
+            return context.Request;
+        }
+
+        private static string Sign(byte[] body, string secret)
+        {
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+            var hash = hmac.ComputeHash(body);
+            var builder = new StringBuilder("sha256=");
+            foreach (var b in hash)
+            {
+                builder.Append(b.ToString("x2"));
+            }
+
+            return builder.ToString();
         }
 
         private sealed class RecordingLogger<T> : ILogger<T>

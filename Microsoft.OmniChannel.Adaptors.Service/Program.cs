@@ -147,15 +147,21 @@ namespace Microsoft.OmniChannel.Adapters.Service
             {
                 services.AddSingleton<ISecretClientAdapter>(_ => new KeyVaultSecretClientAdapter(new Uri(keyVaultUri)));
                 services.AddSingleton<IInstagramTokenStore, KeyVaultInstagramTokenStore>();
+                // P5 — Meta app secret durable in Key Vault (reuses the same ISecretClientAdapter as the token).
+                services.AddSingleton<IAppSecretStore, KeyVaultAppSecretStore>();
             }
             else
             {
                 services.AddSingleton<IInstagramTokenStore, ConfigInstagramTokenStore>();
+                services.AddSingleton<IAppSecretStore, ConfigAppSecretStore>();
             }
 
             services.AddSingleton<IInstagramTokenProvider, InstagramTokenProvider>();
             services.AddHttpClient<IInstagramTokenRefreshClient, InstagramTokenRefreshClient>();
             services.AddHostedService<InstagramTokenRefreshService>();
+
+            // P5 — Meta app secret provider (load-once + in-memory cache + auto-seed; no refresher — it never expires).
+            services.AddSingleton<IAppSecretProvider, AppSecretProvider>();
 
             services.AddSingleton<AdapterServiceResolver>(serviceProvider => key =>
             {

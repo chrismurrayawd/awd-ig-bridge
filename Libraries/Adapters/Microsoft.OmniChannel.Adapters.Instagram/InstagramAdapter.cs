@@ -33,8 +33,8 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// <summary>
         /// Initializes a new instance of the <see cref="InstagramAdapter"/> class using configuration settings.
         /// </summary>
-        public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration, IInstagramTokenProvider tokenProvider, ILogger<InstagramAdapter> logger = null)
-            : this(new InstagramClientWrapper(instagramAdapterConfiguration, tokenProvider))
+        public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration, IInstagramTokenProvider tokenProvider, IAppSecretProvider appSecretProvider, ILogger<InstagramAdapter> logger = null)
+            : this(new InstagramClientWrapper(instagramAdapterConfiguration, tokenProvider, appSecretProvider))
         {
             _relayProcessor = relayProcessor ?? throw new ArgumentNullException(nameof(relayProcessor));
             _useHumanAgentTag = instagramAdapterConfiguration?.Value?.UseHumanAgentTag ?? false;
@@ -67,7 +67,7 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
 
             var rawBody = await ReadRawBodyAsync(request).ConfigureAwait(false);
 
-            if (!_instagramClient.ValidateSignature(rawBody, request))
+            if (!await _instagramClient.ValidateSignatureAsync(rawBody, request).ConfigureAwait(false))
             {
                 throw new InvalidOperationException(Constant.InvalidSignatureExceptionMessage);
             }
