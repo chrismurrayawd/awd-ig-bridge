@@ -144,10 +144,12 @@ The headline acceptance is proven by a unit test (seed an Active row as if it su
 the agent reply reaches the sink addressed to the IGSID — rehydration *is* the steady-state loop).
 
 **▶ Deploy-time prerequisites (Chris drives; bridge falls back to in-memory + config until done):**
-1. **Provision a Storage account** (UK South, in `awd-contactcenter-rg`) and **grant the App Service system-assigned
-   managed identity the `Storage Table Data Contributor` role** on it (same MI as P1's Key Vault — the easy-to-forget
-   grant that bit P1). Set app setting `RelayProcessorSettings__TableServiceUri=https://<account>.table.core.windows.net/`.
-   Without it the bridge silently uses `InMemoryConversationStore` (restarts still drop conversations — P3 is inert).
+0. **PR open:** [#1](https://github.com/chrismurrayawd/awd-ig-bridge/pull/1) (`p3-durable-conversation-store` → `main`).
+1. **✅ DONE 2026-05-31 — Storage provisioned:** account **`awdigbridgestore`** (UK South, `awd-contactcenter-rg`,
+   StorageV2/TLS1.2/no-public-blob); the App Service system-assigned MI `b3429ddd-…` has **`Storage Table Data
+   Contributor`** on it (same MI as P1's Key Vault). The `Conversations` table auto-creates on first P3 boot. **Still
+   to do (the activation switch, deferred to deploy):** set `RelayProcessorSettings__TableServiceUri=https://awdigbridgestore.table.core.windows.net/`
+   — until set, the bridge silently uses `InMemoryConversationStore` (restarts still drop conversations — P3 inert).
 2. **Deploy** via the forward-slash zip incantation, then run the **#1 live acceptance**: DM in → **restart the app**
    → agent reply → reply still reaches the customer. This also proves the one genuine unknown — does Direct Line
    resume a conversation by `ConversationId`+watermark across the restart gap on the old `Bot.Connector.DirectLine 3.0.2`

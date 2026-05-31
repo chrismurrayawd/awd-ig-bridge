@@ -75,13 +75,17 @@ workflow → Candidate A), 10 green commits, then an adversarial review (verdict
 - **Branch:** `p3-durable-conversation-store` (off `main`). Commits `d06768c`→`70989d0`. `dotnet test` = 103 green.
 - **Chris's two decisions:** at-least-once delivery + a single-activity dedup guard (rare duplicate beats a silent
   drop); and the legacy **Line sample channel removed** (resolver is Instagram-only).
-- **▶ To deploy (Chris):** (1) provision a **Storage account** (UK South, `awd-contactcenter-rg`) + grant the App
-  Service **MI `Storage Table Data Contributor`** + set app setting
-  `RelayProcessorSettings__TableServiceUri=https://<account>.table.core.windows.net/` — **without it the bridge
-  silently falls back to in-memory and P3 is inert** (same MI-grant gotcha that bit P1). (2) Forward-slash zip
-  deploy. (3) **Live acceptance:** DM in → **restart the app** → agent reply → reply still arrives. This also proves
-  the one unknown — does Direct Line resume a conversation across the restart gap (DL 3.0.2)? If not, the row is
-  marked **Faulted** + logged Critical (loud, not silent) and a DL-token persist would be added.
+- **PR:** [#1](https://github.com/chrismurrayawd/awd-ig-bridge/pull/1) (`p3-durable-conversation-store` → `main`).
+- **✅ Storage provisioned 2026-05-31:** account **`awdigbridgestore`** (uksouth, `awd-contactcenter-rg`, StorageV2,
+  TLS1_2, no public blob); the App Service MI `b3429ddd-…` has **`Storage Table Data Contributor`** on it. The
+  `Conversations` table is auto-created by the app (`CreateIfNotExists`) on first P3 boot.
+- **▶ To deploy (Chris's go-ahead):** (1) set app setting
+  `RelayProcessorSettings__TableServiceUri=https://awdigbridgestore.table.core.windows.net/` — **the activation
+  switch; until it's set the bridge silently uses in-memory and P3 is inert.** Deliberately NOT set yet (it restarts
+  the live app and the current build ignores it) — flip it together with the deploy. (2) Forward-slash zip deploy of
+  the branch. (3) **Live acceptance:** DM in → **restart the app** → agent reply → reply still arrives. This also
+  proves the one unknown — does Direct Line resume a conversation across the restart gap (DL 3.0.2)? If not, the row
+  is marked **Faulted** + logged Critical (loud, not silent) and a DL-token persist would be added.
 - **Accepted residuals (not bugs):** multi-part-reply duplicate on a crash-before-watermark (single replies are
   effectively-once); a narrow EndOfConversation close-race; **keep the B1 single-instance** (lease columns dormant).
   Full notes in [`plan/hardening-step8-plan.md`](plan/hardening-step8-plan.md) → *P3 AS-BUILT*.
