@@ -19,6 +19,7 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor.Tests.TestDoubles
     public sealed class FakeDirectLineGateway : IDirectLineGateway
     {
         private readonly Queue<object> _getResults = new Queue<object>();
+        private readonly Dictionary<string, Queue<object>> _getResultsByConversation = new Dictionary<string, Queue<object>>(StringComparer.Ordinal);
 
         public string ConversationId { get; set; } = "conv-1";
 
@@ -45,6 +46,24 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor.Tests.TestDoubles
 
         public void EnqueueGetFault(Exception ex) => _getResults.Enqueue(ex);
 
+        // Per-conversation scripting (for multi-conversation poll tests where call order across conversations
+        // is non-deterministic): results are keyed by conversationId, falling back to the shared queue.
+        public void EnqueueActivitiesFor(string conversationId, IEnumerable<Activity> activities, string watermark) =>
+            Bucket(conversationId).Enqueue(new DirectLineActivitySet(activities?.ToList(), watermark));
+
+        public void EnqueueGetFaultFor(string conversationId, Exception ex) => Bucket(conversationId).Enqueue(ex);
+
+        private Queue<object> Bucket(string conversationId)
+        {
+            if (!_getResultsByConversation.TryGetValue(conversationId, out var queue))
+            {
+                queue = new Queue<object>();
+                _getResultsByConversation[conversationId] = queue;
+            }
+
+            return queue;
+        }
+
         public Task<string> StartConversationAsync(CancellationToken cancellationToken)
         {
             StartCalls++;
@@ -69,9 +88,14 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor.Tests.TestDoubles
         public Task<DirectLineActivitySet> GetActivitiesAsync(string conversationId, string watermark, CancellationToken cancellationToken)
         {
             GetCalls++;
-            if (_getResults.Count > 0)
+
+            var queue = _getResultsByConversation.TryGetValue(conversationId, out var perConversation) && perConversation.Count > 0
+                ? perConversation
+                : _getResults;
+
+            if (queue.Count > 0)
             {
-                var next = _getResults.Dequeue();
+                var next = queue.Dequeue();
                 if (next is Exception ex)
                 {
                     return Task.FromException<DirectLineActivitySet>(ex);
