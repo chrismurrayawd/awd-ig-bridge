@@ -9,9 +9,16 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor
     public class RelayProcessorConfiguration
     {
         /// <summary>
-        /// Direct Line Secret
+        /// Direct Line Secret. In production this is seeded into Key Vault on first boot and then served from there
+        /// (P5); the plaintext app setting is the seed source / local-dev fallback.
         /// </summary>
         public string DirectLineSecret { get; set; }
+
+        /// <summary>
+        /// Name of the Key Vault secret holding the Direct Line secret (P5 secret hygiene). Defaults to
+        /// "DirectLineSecret" when unset.
+        /// </summary>
+        public string DirectLineSecretName { get; set; }
 
         /// <summary>
         /// Bot Handle
