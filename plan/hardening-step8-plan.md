@@ -127,12 +127,74 @@ app setting), outbound still works, and a refresh failure is **logged/alerted** 
   request + response status**; **token-refresh events + ANY Send-API/token failure**.
 - **Acceptance:** a signature failure and a full round-trip are both queryable in App Insights within ~1 min.
 
-## P3 — Durable conversation store (replace in-memory cache + polling)
-- Replace `ActiveConversationCache` (static `ConcurrentDictionary`) + the per-conversation polling `Thread`
-  ([`RelayProcessor.cs`](../Microsoft.OmniChannel.MessageRelayProcessor/RelayProcessor.cs)) with a durable store
-  (Azure **Table Storage** or **Service Bus**) keyed by IGSID / Direct Line conversation id + watermark, so restarts
-  don't drop in-flight conversations. Add **retry/backoff** on transient Direct Line + Send API failures.
-- **Acceptance:** start a conversation, restart the app, an agent reply still reaches the customer.
+## P3 — Durable conversation store (replace in-memory cache + polling)  ◀ NEXT — design brief below
+
+**Goal:** a process restart must not drop in-flight conversations. Today an agent reply that arrives after a
+restart is **silently lost** — which is why re-testing outbound this whole project needed a *fresh* DM each time.
+
+### What exists today (the as-built to replace)
+- **`ActiveConversationCache`** — a `static ConcurrentDictionary<string, DirectLineConversation>` keyed by
+  **IGSID** (`inboundActivity.From.Id`). Purely in-memory; empty after any restart.
+- **`DirectLineConversation`** holds three things: a live **`DirectLineClient`** (Bot.Connector SDK, NOT
+  serializable), the **`Conversation`** (its `ConversationId` is the durable bit), and a **`WaterMark`** string.
+- **Polling** — `RelayProcessor.InitiateConversation` spins up a raw **`new Thread(... PollActivitiesFromBotAsync ...)`**
+  per conversation. The loop calls `GetActivitiesAsync(conversationId, watermark)`, forwards activities where
+  `from.id == BotHandle` to the adapter via the **`adapterCallBackHandler`** delegate, updates the in-memory
+  watermark, and `return`s (ends the thread) on `EndOfConversation`.
+- **The hard part:** `adapterCallBackHandler` is an `EventHandler<IList<Activity>>` **closure passed per
+  `PostActivityAsync` call** (wired from `InstagramAdapter.OnActivitiesReceived`). It cannot be persisted, so on
+  rehydration after a restart there is no inbound call to supply it — the outbound delivery path must instead be
+  **resolvable from DI**, not captured per-call. This is the central redesign, more than the storage itself.
+
+### Recommended approach (confirm in the P3 design workflow, don't assume)
+- **Store: Azure Table Storage** (not Service Bus). We need a *keyed, updatable lookup* (IGSID → {ConversationId,
+  WaterMark, state, timestamps}), which is exactly Table Storage's model; Service Bus is a queue, the wrong shape
+  for "current state of conversation X". Cheap, in the existing sub, same managed-identity/DefaultAzureCredential
+  pattern P1 already established (`Azure.Data.Tables` + the MI). Partition key = a constant or channel id; row key
+  = IGSID. Columns: `ConversationId`, `WaterMark`, `CreatedOn`, `LastPolledOn`, `Status` (Active/Ended).
+- **Polling: one `BackgroundService`** (like the P1 refresher), NOT a thread-per-conversation. On startup it
+  **rehydrates** every Active row → recreates a `DirectLineClient` from the Direct Line secret + stored
+  `ConversationId` and resumes polling from the stored `WaterMark`. New conversations add a row; the same loop
+  picks them up. **Persist the watermark after every poll** so a restart resumes with zero/at-most-one-poll replay.
+- **Outbound path via DI:** replace the per-call `adapterCallBackHandler` closure with an injectable interface
+  (e.g. `IOutboundActivitySink` implemented by the Instagram adapter, resolved by channel). The relay/poller
+  resolves the sink from the container, so rehydrated conversations can deliver replies with no inbound trigger.
+  `RelayProcessor.SendReplyActivity` already only sets `ReplyToId = inbound From.Id` (= IGSID) + `ChannelId` — keep
+  that contract; IGSID is the row key, so it's recoverable without the closure.
+- **Retry/backoff** on transient Direct Line (`StartConversationAsync`, `GetActivitiesAsync`, `PostActivityAsync`)
+  and IG Send API failures — e.g. Polly or a small hand-rolled exponential backoff; distinguish transient (5xx,
+  429, timeout) from terminal (4xx auth) so a dead token still surfaces loudly (P2) rather than retrying forever.
+
+### Files in play
+- `Microsoft.OmniChannel.MessageRelayProcessor/RelayProcessor.cs` — the rewrite (remove thread-per-conv + static cache).
+- `Microsoft.OmniChannel.MessageRelayProcessor/Utility/ActiveConversationCache.cs`, `DirectLineConversation.cs` —
+  replace with a store abstraction (`IConversationStore` + `TableConversationStore` + a config/in-memory fallback
+  for local/tests, mirroring P1's `IInstagramTokenStore` pattern).
+- `RelayProcessorConfiguration.cs` — add the table/connection settings (+ reuse `KeyVault__Uri`/MI patterns).
+- `Libraries/Adapters/.../InstagramAdapter.cs` — expose the outbound sink for DI resolution instead of the closure.
+- `Microsoft.OmniChannel.Adaptors.Service/Program.cs` — register store, sink, and the polling `BackgroundService`.
+- New tests under `Tests/...MessageRelayProcessor.Tests` (store round-trip, rehydration, watermark persistence,
+  retry/backoff, EndOfConversation cleanup) — no Azure needed (fake `IConversationStore` + stub Direct Line client seam).
+
+### Open design questions for the P3 session to resolve first
+1. **Direct Line client seam** — `DirectLineClient`/`Conversations` is concrete SDK; wrap behind an interface so
+   the poller is unit-testable without a live Direct Line (mirror P1's `ISecretClientAdapter` seam).
+2. **Concurrency/idempotency** — Table ETag optimistic concurrency on watermark writes; ensure a single poller
+   owns a conversation (single B1 instance today, but don't bake in the assumption — consider a lease/owner column).
+3. **Stale conversation cleanup** — if D365 never emits `EndOfConversation`, rows linger. Add a TTL / max-idle
+   sweep (ties to the `msdyn_autocloseafterinactivity` 48h in RESUME.md).
+4. **Local/dev + tests** — config/in-memory `IConversationStore` when no table is configured (so build/tests need no Azure).
+
+### Acceptance
+Start a conversation (DM in), **restart the app**, then have an agent reply — the reply still reaches the customer
+on Instagram (no dropped conversation, watermark resumed). Transient Direct Line/Send failures retry and recover;
+a terminal/auth failure is logged loudly (P2), not retried into silence. `dotnet test` green with new P3 tests.
+
+### Approach for the P3 session (ultracode)
+Design-first: run a short **design workflow** (2–3 candidate architectures for the sink/rehydration problem,
+judged) → lock the design → implement → **adversarial review** (concurrency, restart-correctness, retry semantics,
+secret handling) like P1 → tests green → then deploy on Chris's go-ahead (forward-slash zip; verify via App
+Insights / `/api/TokenHealth`-style health, since the log stream is dead — see [`RESUME.md`](../RESUME.md) gotchas).
 
 ## P4 — Richer attachment / story handling
 - Today inbound media/stories degrade to a text placeholder (`InstagramHelper.DescribeAttachments`). Surface image/story
