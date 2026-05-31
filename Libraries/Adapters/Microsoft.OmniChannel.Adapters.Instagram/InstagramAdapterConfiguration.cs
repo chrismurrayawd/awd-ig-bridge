@@ -58,5 +58,11 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         /// How often the background refresher checks the token, in hours. Defaults to 12 when ≤ 0.
         /// </summary>
         public int TokenRefreshCheckIntervalHours { get; set; }
+
+        /// <summary>
+        /// Name of the Key Vault secret holding the Meta app secret (P5 secret hygiene). Defaults to
+        /// "MetaAppSecret" when unset.
+        /// </summary>
+        public string AppSecretName { get; set; }
     }
 }
