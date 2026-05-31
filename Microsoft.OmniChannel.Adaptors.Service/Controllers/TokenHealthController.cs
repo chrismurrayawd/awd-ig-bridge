@@ -5,6 +5,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.OmniChannel.Adapters.Instagram;
+using Microsoft.OmniChannel.MessageRelayProcessor;
+using Microsoft.OmniChannel.MessageRelayProcessor.DirectLine;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -126,6 +128,54 @@ namespace Microsoft.OmniChannel.Adapters.Service.Controllers
             catch (Exception ex)
             {
                 result["providerError"] = ex.GetType().Name + ": " + Truncate(ex.Message, 600);
+            }
+
+            // P5 — Meta app secret hygiene. Lengths / types / booleans only; NEVER the value. Lets a failed
+            // Key Vault auth for the app secret be diagnosed over HTTP (the App Service log stream is unreliable).
+            result["appSecretConfiguredLength"] = _adapterConfig.AppSecret?.Length ?? 0;
+            result["appSecretSecretName"] = string.IsNullOrWhiteSpace(_adapterConfig.AppSecretName) ? "MetaAppSecret" : _adapterConfig.AppSecretName;
+            var appSecretStore = _services.GetService<IAppSecretStore>();
+            result["appSecretStoreType"] = appSecretStore?.GetType().Name ?? "(none)";
+            try
+            {
+                var stored = appSecretStore == null ? null : await appSecretStore.GetAsync(cancellationToken).ConfigureAwait(false);
+                result["appSecretStoreGet"] = "ok";
+                result["appSecretStoreHasValue"] = !string.IsNullOrEmpty(stored);
+                result["appSecretStoreLength"] = stored?.Length ?? 0;
+            }
+            catch (Exception ex)
+            {
+                result["appSecretStoreGet"] = "error";
+                result["appSecretStoreError"] = ex.GetType().Name + ": " + Truncate(ex.Message, 600);
+            }
+
+            try
+            {
+                var appSecretProvider = _services.GetService<IAppSecretProvider>();
+                var appSecret = appSecretProvider == null ? null : await appSecretProvider.GetAppSecretAsync(cancellationToken).ConfigureAwait(false);
+                result["appSecretProviderHasValue"] = !string.IsNullOrEmpty(appSecret);
+                result["appSecretProviderLength"] = appSecret?.Length ?? 0;
+            }
+            catch (Exception ex)
+            {
+                result["appSecretProviderError"] = ex.GetType().Name + ": " + Truncate(ex.Message, 600);
+            }
+
+            // P5 — Direct Line secret hygiene. Lengths / types only; NEVER the value.
+            var relayConfig = _services.GetService<IOptions<RelayProcessorConfiguration>>()?.Value;
+            result["directLineSecretConfiguredLength"] = relayConfig?.DirectLineSecret?.Length ?? 0;
+            result["directLineSecretName"] = string.IsNullOrWhiteSpace(relayConfig?.DirectLineSecretName) ? "DirectLineSecret" : relayConfig.DirectLineSecretName;
+            var directLineSecretProvider = _services.GetService<IDirectLineSecretProvider>();
+            result["directLineSecretProviderType"] = directLineSecretProvider?.GetType().Name ?? "(none)";
+            try
+            {
+                var directLineSecret = directLineSecretProvider?.GetSecret();
+                result["directLineSecretHasValue"] = !string.IsNullOrEmpty(directLineSecret);
+                result["directLineSecretLength"] = directLineSecret?.Length ?? 0;
+            }
+            catch (Exception ex)
+            {
+                result["directLineSecretError"] = ex.GetType().Name + ": " + Truncate(ex.Message, 600);
             }
 
             return Ok(result);

@@ -300,7 +300,56 @@ Insights / `/api/TokenHealth`-style health, since the log stream is dead — see
 - Today inbound media/stories degrade to a text placeholder (`InstagramHelper.DescribeAttachments`). Surface image/story
   URLs (or media) to the agent per the IG webhook payload shapes. Lower priority.
 
-## P5 — Secret hygiene  ◀ NEXT (best started in a FRESH session, design-first + adversarial review like P3)
+## P5 — Secret hygiene  ◀ CODE-COMPLETE on branch `p5-secret-hygiene` (NOT deployed; awaiting Chris's go-ahead)
+
+### ✅ AS-BUILT (2026-05-31) — Option B (two parallel seams), design-first + adversarial review
+
+Built per a judged design workflow (3 architects → 3-lens judge panel, all converged on **Option B**: two
+parallel seams reusing the existing `ISecretClientAdapter` as-is, **zero P1-source churn**). Five commit-sized
+steps, `dotnet test` green at every commit, then an adversarial review (5 lenses → independent verification of
+each finding). **102 → 132 tests.** **Not merged, not deployed.**
+
+**Adversarial-review outcome (8 findings, all verified):** one **confirmed-real** issue fixed —
+`KeyVaultDirectLineSecretProvider.WarmAsync`'s Key Vault *read* was unguarded (only the seed *write* was), so a
+non-404 transient read failure at boot (KV throttle/outage, or the *managed-identity-not-reachable* class that bit
+P1) would crash the whole bridge and bypass the still-valid config seed — asymmetric with P1's self-healing lazy
+load. **Fixed:** the read now falls back to the configured secret when one is present (host stays up, P1-parity;
+re-reads KV on the next restart) and fails **loud** only when there is genuinely no secret anywhere. The remaining
+findings were comment-accuracy / a test-coverage gap (both addressed) — no other behavioural defect; secret-leak,
+config-fallback, init-timing, and MI-scope invariants all held.
+
+**What shipped:**
+- **AppSecret (adapter project):** new `SecretStore/` trio mirroring P1 — `IAppSecretStore` +
+  `KeyVaultAppSecretStore` (reuses `ISecretClientAdapter`, `expiresOn: null`) + `ConfigAppSecretStore` fallback +
+  `IAppSecretProvider`/`AppSecretProvider` (singleton, lazy load, auto-seed from `AppSecret`, best-effort persist,
+  no-cache-on-failed-init). `InstagramClientWrapper.ValidateSignature` → **async `ValidateSignatureAsync`** reads
+  the provider (fail-closed → 403 on a missing secret, never throws); the empty-AppSecret ctor throw was dropped
+  (provider owns it now; same precedent as P1's PageAccessToken). A backwards-compatible 3-arg wrapper ctor keeps
+  the P1 Send-path tests compiling unchanged. `InstagramAdapterConfiguration.AppSecretName` added.
+- **DirectLineSecret (relay + Service):** relay `IDirectLineSecretProvider { string GetSecret(); Task WarmAsync(ct); }`
+  + `ConfigDirectLineSecretProvider` fallback. **`DirectLineGatewayFactory` ctor source swapped** from
+  `IOptions<RelayProcessorConfiguration>` to the provider — the **only** relay-side change. KV-backed
+  `KeyVaultDirectLineSecretProvider` lives in the **Service** composition root (the only project seeing both
+  `ISecretClientAdapter` and the relay interface); load-once + auto-seed + best-effort persist; `GetSecret()`
+  returns the cache with a defensive sync-block-once. `RelayProcessorConfiguration.DirectLineSecretName` added.
+- **Init timing:** AppSecret lazy+cached (first webhook, async); DirectLine **warmed in `Program.Main` after
+  `builder.Build()` / before `app.Run()`** so the eager gateway reads a hot cache synchronously. The
+  config-fallback needs no warming → the no-Azure DI test still resolves `IDirectLineGateway`.
+- **`/api/TokenHealth`** extended (length/type/boolean only, **never values**) to report both new secrets'
+  store type + load result, for deploy verification given the unreliable log stream.
+- **KV secret names:** `MetaAppSecret`, `DirectLineSecret` (P1's `IgUserAccessToken` unaffected). No background
+  refresher (these don't expire). **Rotation runbook:** [`docs/secret-rotation-runbook.md`](../docs/secret-rotation-runbook.md).
+
+**Deploy steps (Chris go-ahead; same MI/vault as P1):** deploy with the plaintext `AppSecret` +
+`DirectLineSecret` app settings still present → bridge auto-seeds `MetaAppSecret` + `DirectLineSecret` into KV on
+boot → verify via `/api/TokenHealth` (`*StoreHasValue: true`, correct types/lengths) + a real DM round-trip →
+**rotate both** (Meta Reset / Direct Line regenerate → `az keyvault secret set` → restart → verify) → **delete the
+plaintext app settings** (keep one verified cycle first, per the P1 playbook). Forward-slash zip; first deploy may
+502 (retry); App Insights with `-o json`. Keep B1 single-instance.
+
+---
+
+### Original spec (the brief the build executed)
 
 **Goal:** move the two remaining plaintext secrets — `InstagramAdapterSettings:AppSecret` (validates inbound
 `X-Hub-Signature-256`) and `RelayProcessorSettings:DirectLineSecret` (Direct Line) — into Key Vault `awd-ig-bridge-kv`

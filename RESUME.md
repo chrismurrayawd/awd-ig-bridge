@@ -64,8 +64,37 @@ sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
    values, but worth removing now KV is finished (delete `TokenHealthController.cs` + redeploy).
 3. **Tidy stale vault access policies** — earlier identity principalIds (`2983d974…`, `ce252f3f…`) still have
    policies on `awd-ig-bridge-kv`; only `b3429ddd…` (current MI) is needed.
-4. **Remaining hardening:** **P3** durable conversation store — **✅ code-complete on branch (see P3 block below)** ·
-   **P4** richer attachment/story handling · **P5** broader secret rotation (AppSecret/DirectLineSecret → KV).
+4. **Remaining hardening:** **P3** durable conversation store — **✅ DONE & deployed** ·
+   **P5** secret hygiene (AppSecret/DirectLineSecret → KV) — **✅ code-complete on branch `p5-secret-hygiene`
+   (NOT deployed; see P5 block below)** · **P4** richer attachment/story handling — still open.
+
+### ◀ P5 — secret hygiene: CODE-COMPLETE on branch `p5-secret-hygiene` (2026-05-31, NOT deployed)
+
+Moves the two remaining plaintext secrets — `InstagramAdapterSettings:AppSecret` (validates inbound
+`X-Hub-Signature-256`) and `RelayProcessorSettings:DirectLineSecret` (Direct Line relay) — into Key Vault
+**`awd-ig-bridge-kv`** (same vault + MI `b3429ddd-…` as P1; get/set/list already granted), with a config-fallback so
+build/tests need no Azure, and **auto-seed from the current app settings on first boot** (mirrors P1). These secrets
+don't expire → **no background refresher**, just durable KV + load-at-startup + cache. Built design-first (judged
+workflow → **Option B**: two parallel seams reusing `ISecretClientAdapter` as-is, **zero P1-source churn**), 5 green
+commits, then an adversarial review.
+
+- **Branch:** `p5-secret-hygiene` (off `main`). `dotnet test` = **132 green** (was 102; +30 P5 tests). Built
+  design-first (judged workflow → Option B) then an adversarial review (5 lenses → verify); the one confirmed-real
+  finding fixed: `KeyVaultDirectLineSecretProvider.WarmAsync` now falls back to the config seed on a transient
+  Key Vault *read* failure (host stays up, P1-parity) and fails loud only when no secret exists anywhere.
+- **KV secret names:** `MetaAppSecret`, `DirectLineSecret` (P1's `IgUserAccessToken` unaffected).
+- **AppSecret** → `IAppSecretProvider` in the adapter (reuses `ISecretClientAdapter`); `ValidateSignature` is now
+  **async** and reads the provider (fail-closed → 403, never throws). **DirectLineSecret** → relay-defined
+  `IDirectLineSecretProvider` (the `DirectLineGatewayFactory` ctor source swap was the only relay change); KV impl
+  lives in the Service composition root and is **warmed in `Program.Main`** so the eager gateway reads it sync.
+- **`/api/TokenHealth`** now also reports both new secrets' store type + load result (length/type/boolean only).
+- **Rotation runbook:** [`docs/secret-rotation-runbook.md`](docs/secret-rotation-runbook.md). Rotation = update KV +
+  `az webapp restart` + verify (bad AppSecret → inbound 403; bad DirectLineSecret → StartConversation throws — both loud).
+- **▶ Deploy (Chris go-ahead):** deploy with the plaintext app settings still present → bridge seeds both KV secrets
+  on boot → verify via `/api/TokenHealth` (`appSecretStoreType=KeyVaultAppSecretStore`,
+  `directLineSecretProviderType=KeyVaultDirectLineSecretProvider`, `*HasValue=true`) + a real DM round-trip →
+  **rotate both** → **delete the plaintext `AppSecret`/`DirectLineSecret` app settings** (keep one verified cycle first).
+  Forward-slash zip; first deploy may 502 (retry); App Insights `-o json`. Keep B1 single-instance.
 
 ### ✅ P3 — durable conversation store: DEPLOYED & LIVE-VERIFIED (2026-05-31)
 

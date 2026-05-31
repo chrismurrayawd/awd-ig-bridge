@@ -75,5 +75,19 @@ namespace Microsoft.OmniChannel.Adapters.Service.Tests
 
             Assert.Contains(hosted, h => h is ConversationPollingService);
         }
+
+        [Fact]
+        public void ConfigureServices_ResolvesSecretProviders_AsConfigFallback_NoAzure()
+        {
+            using var provider = BuildProvider();
+
+            // P5 — no KeyVault:Uri, so both secrets fall back to config (no Azure, no warming).
+            Assert.NotNull(provider.GetRequiredService<IAppSecretProvider>());
+            Assert.IsType<ConfigAppSecretStore>(provider.GetRequiredService<IAppSecretStore>());
+            Assert.IsType<ConfigDirectLineSecretProvider>(provider.GetRequiredService<IDirectLineSecretProvider>());
+
+            // Regression guard: the gateway still resolves via the swapped factory secret source with no warming.
+            Assert.NotNull(provider.GetRequiredService<IDirectLineGateway>());
+        }
     }
 }

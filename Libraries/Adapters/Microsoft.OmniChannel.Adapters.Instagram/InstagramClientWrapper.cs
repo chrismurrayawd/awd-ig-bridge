@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using System;
@@ -28,37 +29,50 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
 
         private readonly IOptions<InstagramAdapterConfiguration> _configuration;
         private readonly IInstagramTokenProvider _tokenProvider;
+        private readonly IAppSecretProvider _appSecretProvider;
         private readonly HttpClient _httpClient;
 
-        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider)
-            : this(configuration, tokenProvider, new HttpClient())
+        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider, IAppSecretProvider appSecretProvider)
+            : this(configuration, tokenProvider, appSecretProvider, new HttpClient())
         {
         }
 
         // Overload taking an explicit HttpClient — used by tests to inject a stub handler.
-        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider, HttpClient httpClient)
+        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider, IAppSecretProvider appSecretProvider, HttpClient httpClient)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+            _appSecretProvider = appSecretProvider ?? throw new ArgumentNullException(nameof(appSecretProvider));
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
 
-            // The access token is no longer validated here: it is owned by the token provider (which may still
-            // be initialising / seeding at construction time). AppSecret and IgBusinessId are static config.
-            if (string.IsNullOrWhiteSpace(_configuration.Value?.AppSecret))
-            {
-                throw new MissingFieldException(nameof(InstagramAdapterConfiguration.AppSecret));
-            }
-
+            // Neither the access token nor the app secret is validated here: both are owned by their providers
+            // (which may still be initialising / seeding at construction time). IgBusinessId is static config.
             if (string.IsNullOrWhiteSpace(_configuration.Value?.IgBusinessId))
             {
                 throw new MissingFieldException(nameof(InstagramAdapterConfiguration.IgBusinessId));
             }
         }
 
+        // Backwards-compatible overload (config-backed app secret) so existing tests that build the wrapper with
+        // just a token provider + HttpClient compile unchanged. Production resolves the real provider via DI.
+        public InstagramClientWrapper(IOptions<InstagramAdapterConfiguration> configuration, IInstagramTokenProvider tokenProvider, HttpClient httpClient)
+            : this(
+                  configuration,
+                  tokenProvider,
+                  new AppSecretProvider(
+                      new ConfigAppSecretStore(configuration, NullLogger<ConfigAppSecretStore>.Instance),
+                      configuration,
+                      NullLogger<AppSecretProvider>.Instance),
+                  httpClient)
+        {
+        }
+
         /// <summary>
-        /// Validate the inbound webhook's X-Hub-Signature-256 header against the raw body and app secret.
+        /// Validate the inbound webhook's X-Hub-Signature-256 header against the raw body and the app secret read
+        /// from the provider (Key Vault-backed in production, cached in memory). Async so the secret can be loaded
+        /// from the store on first use; every subsequent call is an in-memory cache hit.
         /// </summary>
-        public bool ValidateSignature(byte[] rawBody, HttpRequest request)
+        public async Task<bool> ValidateSignatureAsync(byte[] rawBody, HttpRequest request)
         {
             if (request == null)
             {
@@ -66,7 +80,15 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
             }
 
             var signatureHeader = request.Headers[SignatureHeaderName].ToString();
-            return InstagramHelper.IsValidSignature(rawBody, signatureHeader, _configuration.Value.AppSecret);
+            var appSecret = await _appSecretProvider.GetAppSecretAsync().ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(appSecret))
+            {
+                // No app secret available (Key Vault empty + app setting absent) — we cannot validate, so fail
+                // closed (the caller turns this into a 403), never throw. The provider has already logged why.
+                return false;
+            }
+
+            return InstagramHelper.IsValidSignature(rawBody, signatureHeader, appSecret);
         }
 
         /// <summary>

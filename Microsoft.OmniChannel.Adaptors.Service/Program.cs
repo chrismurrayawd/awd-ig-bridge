@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.OmniChannel.Adapter.Builder;
 using Microsoft.OmniChannel.Adapters.Instagram;
+using Microsoft.OmniChannel.Adapters.Service.Secrets;
 using Microsoft.OmniChannel.MessageRelayProcessor;
 using Microsoft.OmniChannel.MessageRelayProcessor.Conversations;
 using Microsoft.OmniChannel.MessageRelayProcessor.DirectLine;
@@ -15,6 +16,7 @@ using Newtonsoft.Json.Serialization;
 using NLog.Extensions.Logging;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Microsoft.OmniChannel.Adapters.Service
 {
@@ -43,6 +45,13 @@ namespace Microsoft.OmniChannel.Adapters.Service
             ConfigureServices(builder.Services, builder.Configuration);
 
             var app = builder.Build();
+
+            // P5 — warm the Direct Line secret into its in-memory cache BEFORE the host starts. The eager
+            // IDirectLineGateway singleton is built during host start (inside app.Run) and reads the secret
+            // SYNCHRONOUSLY via the factory, so the cache must already be populated. Resolving the provider here does
+            // NOT build the gateway. The config-fallback provider's WarmAsync is a no-op (no Azure for local/tests).
+            app.Services.GetRequiredService<IDirectLineSecretProvider>()
+                .WarmAsync(CancellationToken.None).GetAwaiter().GetResult();
 
             app.MapControllers();
 
@@ -119,10 +128,11 @@ namespace Microsoft.OmniChannel.Adapters.Service
             }
 
             // One shared Direct Line gateway (bound only to the secret, so it serves every conversation), wrapped in
-            // retry/backoff. The factory is the single place the secret is consumed (eases the future P5 KV move).
+            // retry/backoff. The factory reads the secret from IDirectLineSecretProvider (P5: Key Vault-backed in
+            // production, config-backed locally) — the single place the secret is consumed.
             services.AddSingleton<IDirectLineGatewayFactory>(serviceProvider =>
                 new ResilientDirectLineGatewayFactory(
-                    new DirectLineGatewayFactory(serviceProvider.GetRequiredService<IOptions<RelayProcessorConfiguration>>()),
+                    new DirectLineGatewayFactory(serviceProvider.GetRequiredService<IDirectLineSecretProvider>()),
                     serviceProvider.GetRequiredService<ILogger<ResilientDirectLineGateway>>()));
             services.AddSingleton<IDirectLineGateway>(serviceProvider =>
                 serviceProvider.GetRequiredService<IDirectLineGatewayFactory>().Create());
@@ -147,15 +157,24 @@ namespace Microsoft.OmniChannel.Adapters.Service
             {
                 services.AddSingleton<ISecretClientAdapter>(_ => new KeyVaultSecretClientAdapter(new Uri(keyVaultUri)));
                 services.AddSingleton<IInstagramTokenStore, KeyVaultInstagramTokenStore>();
+                // P5 — Meta app secret + Direct Line secret durable in Key Vault (all reuse the same
+                // ISecretClientAdapter / managed identity as the P1 token).
+                services.AddSingleton<IAppSecretStore, KeyVaultAppSecretStore>();
+                services.AddSingleton<IDirectLineSecretProvider, KeyVaultDirectLineSecretProvider>();
             }
             else
             {
                 services.AddSingleton<IInstagramTokenStore, ConfigInstagramTokenStore>();
+                services.AddSingleton<IAppSecretStore, ConfigAppSecretStore>();
+                services.AddSingleton<IDirectLineSecretProvider, ConfigDirectLineSecretProvider>();
             }
 
             services.AddSingleton<IInstagramTokenProvider, InstagramTokenProvider>();
             services.AddHttpClient<IInstagramTokenRefreshClient, InstagramTokenRefreshClient>();
             services.AddHostedService<InstagramTokenRefreshService>();
+
+            // P5 — Meta app secret provider (load-once + in-memory cache + auto-seed; no refresher — it never expires).
+            services.AddSingleton<IAppSecretProvider, AppSecretProvider>();
 
             services.AddSingleton<AdapterServiceResolver>(serviceProvider => key =>
             {
