@@ -1,11 +1,16 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
+using Azure.Data.Tables;
+using Azure.Identity;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.OmniChannel.Adapter.Builder;
 using Microsoft.OmniChannel.Adapters.Instagram;
 using Microsoft.OmniChannel.MessageRelayProcessor;
+using Microsoft.OmniChannel.MessageRelayProcessor.Conversations;
+using Microsoft.OmniChannel.MessageRelayProcessor.DirectLine;
 using Newtonsoft.Json.Serialization;
 using NLog.Extensions.Logging;
 using System;
@@ -68,7 +73,53 @@ namespace Microsoft.OmniChannel.Adapters.Service
             services.Configure<RelayProcessorConfiguration>(configuration.GetSection("RelayProcessorSettings"));
 
             services.AddSingleton<InstagramAdapter>();
-            services.AddTransient<IRelayProcessor, RelayProcessor>();
+            // Stateless + durable (P3): singleton, sharing the conversation store and the Direct Line gateway.
+            services.AddSingleton<IRelayProcessor, RelayProcessor>();
+
+            // P3 — Durable conversation store (plan step 8). Table Storage when RelayProcessorSettings:TableServiceUri
+            // is set (production, via the same managed identity as the Key Vault); in-memory fallback otherwise so
+            // local dev / tests need no Azure (mirrors the KeyVault:Uri switch below).
+            var tableServiceUri = configuration["RelayProcessorSettings:TableServiceUri"];
+            if (!string.IsNullOrWhiteSpace(tableServiceUri))
+            {
+                var tableName = configuration["RelayProcessorSettings:ConversationsTableName"];
+                if (string.IsNullOrWhiteSpace(tableName))
+                {
+                    tableName = "Conversations";
+                }
+
+                services.AddSingleton<ITableClientAdapter>(_ =>
+                {
+                    var serviceClient = new TableServiceClient(new Uri(tableServiceUri), new DefaultAzureCredential());
+                    var tableClient = serviceClient.GetTableClient(tableName);
+                    tableClient.CreateIfNotExists();
+                    return new TableClientAdapter(tableClient);
+                });
+                services.AddSingleton<IConversationStore, TableConversationStore>();
+            }
+            else
+            {
+                services.AddSingleton<IConversationStore, InMemoryConversationStore>();
+            }
+
+            // One shared Direct Line gateway (bound only to the secret, so it serves every conversation), wrapped in
+            // retry/backoff. The factory is the single place the secret is consumed (eases the future P5 KV move).
+            services.AddSingleton<IDirectLineGatewayFactory>(serviceProvider =>
+                new ResilientDirectLineGatewayFactory(
+                    new DirectLineGatewayFactory(serviceProvider.GetRequiredService<IOptions<RelayProcessorConfiguration>>()),
+                    serviceProvider.GetRequiredService<ILogger<ResilientDirectLineGateway>>()));
+            services.AddSingleton<IDirectLineGateway>(serviceProvider =>
+                serviceProvider.GetRequiredService<IDirectLineGatewayFactory>().Create());
+
+            // Outbound reply delivery resolved by channel (replaces the per-call closure), mirroring AdapterServiceResolver.
+            services.AddSingleton<OutboundSinkResolver>(serviceProvider => key => key switch
+            {
+                ChannelType.Instagram => serviceProvider.GetRequiredService<InstagramAdapter>(),
+                _ => throw new KeyNotFoundException(key),
+            });
+
+            // The single background poller that rehydrates Active conversations and delivers agent replies.
+            services.AddHostedService<ConversationPollingService>();
 
             // P1 — Instagram-user token persistence + auto-refresh (plan step 8).
             // Key Vault store when KeyVault:Uri is set (production, via managed identity); config-backed
