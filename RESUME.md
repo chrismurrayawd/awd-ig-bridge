@@ -12,8 +12,9 @@ Access, and no Tech Provider are needed** (do NOT submit App Review / do NOT bec
 > with the **Table-backed durable store** (the `Conversations` table in storage account `awdigbridgestore` was
 > auto-created on startup via the managed identity — hard proof the durable store is active and NOT the in-memory
 > fallback; zero errors/criticals on boot). The bridge now survives a restart without dropping in-flight
-> conversations. See the P3 block below (`### ✅ P3 …`). **One manual acceptance remains** (a real Tester DM →
-> restart → agent reply round-trip — needs Chris/Lachy + a D365 agent).
+> conversations. See the P3 block below (`### ✅ P3 …`). **Fully verified end-to-end with a REAL customer round-trip
+> (2026-05-31):** a real IG DM → **App Service restarted mid-conversation** → the agent's D365 reply still landed in
+> the customer's Instagram inbox. P3 is **DONE**.
 
 **Host:** ASP.NET Core Web API on **Linux Azure App Service `awd-ig-bridge`** (RG `awd-contactcenter-rg`,
 sub Core Benefits Credits `95b2f141-…`, UK South). Public webhook
@@ -91,9 +92,12 @@ workflow → Candidate A), 10 green commits, then an adversarial review (verdict
   climbing). So the durable store survives a restart, the poller rehydrates from it, and **Direct Line resumes the
   conversation across the restart gap on the 3.0.2 SDK** (no 404/Faulted) — the #1 open unknown, answered YES. Test
   row cleaned up (table back to 0 rows). **Keep the App Service at one B1 instance** (lease columns dormant).
-- **▶ Only remaining acceptance — the real-customer outbound leg (needs Chris/Lachy + a D365 agent + a browser):**
-  Tester DMs `@alloywheelsdirect` → **restart the App Service mid-conversation** → agent replies in D365 → confirm the
-  reply lands in the customer's IG inbox. (Couldn't be driven this session — no Playwright/browser MCP connected.)
+- **✅ FULL real-customer round-trip PROVEN (2026-05-31, Chris driving IG + D365):** Chris DM'd `@alloywheelsdirect`
+  from his personal IG ("P3 restart test") → durable row created (IGSID `6336548429781043`, DL conversation
+  `2iDhIU1YVY0BqK3eGuRlUo-uk`, 15:50:11) → **App Service restarted mid-conversation (15:51:32)** → post-restart poller
+  rehydrated it (`LastPolledOn` 15:52:05, Active) → Chris (agent) replied in D365 → the reply was relayed to IG
+  (`LastDeliveredActivityId` set, 15:53:31) and **landed in his Instagram inbox (visually confirmed).** The exact
+  scenario that was broken before now works end-to-end. **P3 acceptance: COMPLETE.**
 - **Deploy gotchas learned this round (don't relearn):** the **first `az webapp deploy` 502'd (transient SCM
   cold-start) — a straight retry succeeded.** The Bash tool's `tar` is **GNU tar (cannot write zip)** → build the
   deploy zip with **Python `zipfile`** (forward-slash arcnames via `.replace(chr(92),'/')`); verify ~60 entries +

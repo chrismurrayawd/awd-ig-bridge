@@ -151,12 +151,12 @@ the agent reply reaches the sink addressed to the IGSID — rehydration *is* the
    succeeded). The `Conversations` table **auto-created on boot** — proves the Table store is active (not the
    in-memory fallback) and the MI works; app healthy, **zero errors/criticals on startup** (query App Insights with
    `-o json`, not `-o table`).
-3. **▶ Remaining — the #1 live acceptance (manual; Chris/Lachy + a D365 agent):** DM in → **restart the App Service**
-   → agent reply → reply still reaches the customer on Instagram (watermark resumed, no dropped conversation). Also
-   proves the one genuine unknown — does Direct Line resume a conversation by `ConversationId`+watermark across the
-   restart gap on the old `Bot.Connector.DirectLine 3.0.2` SDK? If it 404s, the row is marked **Faulted** + logged
-   Critical (visible, never silent); only then would a DL-token persist/refresh be needed. **Keep the App Service at
-   one B1 instance** (lease columns dormant).
+3. **✅ #1 live acceptance — PASSED 2026-05-31 (real customer round-trip, Chris driving IG + D365):** real IG DM →
+   durable row created → **App Service restarted mid-conversation** → post-restart poller rehydrated it (Active,
+   `LastPolledOn` advanced) → the agent's D365 reply was relayed to IG and **landed in the customer's Instagram
+   inbox**. So Direct Line DOES resume a conversation by `ConversationId`+watermark across the restart gap on the
+   3.0.2 SDK (no 404/Faulted); a reply sent after a restart is never dropped. No DL-token persist needed. **P3
+   acceptance COMPLETE. Keep the App Service at one B1 instance** (lease columns dormant).
 
 **Accepted residuals (documented, not bugs — confirmed by the review):**
 - **At-least-once**: a crash between the `LastDeliveredActivityId` write and the watermark write can re-deliver the
