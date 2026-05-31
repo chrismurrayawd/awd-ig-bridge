@@ -34,6 +34,8 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor.Tests.TestDoubles
 
         public List<Activity> Posted { get; } = new List<Activity>();
 
+        public List<string> PostedConversationIds { get; } = new List<string>();
+
         public bool Disposed { get; private set; }
 
         public void EnqueueActivities(DirectLineActivitySet set) => _getResults.Enqueue(set);
@@ -60,6 +62,7 @@ namespace Microsoft.OmniChannel.MessageRelayProcessor.Tests.TestDoubles
             }
 
             Posted.Add(activity);
+            PostedConversationIds.Add(conversationId);
             return Task.CompletedTask;
         }
 

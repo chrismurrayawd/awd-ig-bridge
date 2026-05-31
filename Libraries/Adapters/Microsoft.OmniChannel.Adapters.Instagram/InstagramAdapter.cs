@@ -6,10 +6,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.OmniChannel.Adapter.Builder;
 using Microsoft.OmniChannel.MessageRelayProcessor;
+using Microsoft.OmniChannel.MessageRelayProcessor.Resilience;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Microsoft.OmniChannel.Adapters.Instagram
@@ -17,17 +19,16 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
     /// <summary>
     /// Processes inbound and outbound Instagram Direct messages.
     /// Inbound: validate the Meta signature, map the webhook payload to Bot Framework activities, hand to the relay.
-    /// Outbound: convert agent reply activities into Instagram Send API calls.
+    /// Outbound: convert agent reply activities into Instagram Send API calls. Implements
+    /// <see cref="IOutboundActivitySink"/> so the polling service can deliver replies resolved from DI by channel —
+    /// no per-call closure, so replies survive a restart.
     /// </summary>
-    public class InstagramAdapter : IAdapterBuilder
+    public class InstagramAdapter : IAdapterBuilder, IOutboundActivitySink
     {
         private readonly IRelayProcessor _relayProcessor;
         private readonly InstagramClientWrapper _instagramClient;
         private readonly bool _useHumanAgentTag;
         private readonly ILogger _logger;
-
-        /// <summary>Callback raised by the relay processor with activities to send back to Instagram.</summary>
-        private event EventHandler<IList<Activity>> InstagramActivitiesReceived;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="InstagramAdapter"/> class using configuration settings.
@@ -35,10 +36,9 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
         public InstagramAdapter(IRelayProcessor relayProcessor, IOptions<InstagramAdapterConfiguration> instagramAdapterConfiguration, IInstagramTokenProvider tokenProvider, ILogger<InstagramAdapter> logger = null)
             : this(new InstagramClientWrapper(instagramAdapterConfiguration, tokenProvider))
         {
-            _relayProcessor = relayProcessor;
+            _relayProcessor = relayProcessor ?? throw new ArgumentNullException(nameof(relayProcessor));
             _useHumanAgentTag = instagramAdapterConfiguration?.Value?.UseHumanAgentTag ?? false;
             _logger = logger;
-            InstagramActivitiesReceived += OnActivitiesReceived;
         }
 
         /// <summary>
@@ -77,8 +77,25 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
 
             foreach (var activity in activities)
             {
-                await _relayProcessor.PostActivityAsync(activity, InstagramActivitiesReceived).ConfigureAwait(false);
+                // No callback: the relay persists the conversation; the polling service delivers replies via the
+                // DI-resolved sink (this adapter's SendActivitiesAsync), so a reply survives a process restart.
+                await _relayProcessor.PostActivityAsync(activity, ChannelType.Instagram).ConfigureAwait(false);
             }
+        }
+
+        /// <summary>
+        /// Outbound sink entry point used by the polling service. Wraps the Send in retry/backoff so a transient
+        /// IG blip (429/5xx) is ridden out, while a terminal failure (dead token = 4xx) throws so the poller leaves
+        /// the watermark un-advanced and logs loudly — the reply is retried next tick rather than silently dropped.
+        /// </summary>
+        public Task SendActivitiesAsync(IList<Activity> activities, CancellationToken cancellationToken)
+        {
+            var retry = new RetryExecutor(new RetryOptions(), _logger);
+            return retry.ExecuteAsync(
+                _ => ProcessOutboundActivitiesAsync(activities),
+                InstagramFaultClassifier.IsTransientSendFault,
+                "Instagram.Send",
+                cancellationToken);
         }
 
         /// <summary>
@@ -91,43 +108,14 @@ namespace Microsoft.OmniChannel.Adapters.Instagram
                 throw new ArgumentNullException(nameof(outboundActivities));
             }
 
-            // The relay sets ReplyToId to the inbound user's IGSID (see RelayProcessor.SendReplyActivity).
+            // The poller sets ReplyToId to the inbound user's IGSID (see ConversationPollingService.SendReplyActivity).
             var recipientId = outboundActivities[0]?.ReplyToId;
             var sendRequests = InstagramHelper.ActivityToInstagram(outboundActivities, recipientId, _useHumanAgentTag);
 
             if (sendRequests.Count > 0)
             {
                 await _instagramClient.SendMessagesAsync(sendRequests).ConfigureAwait(false);
-            }
-        }
-
-        /// <summary>
-        /// Relay callback. Runs on the polling thread, so failures are logged rather than thrown (async void).
-        /// </summary>
-        private async void OnActivitiesReceived(object sender, IList<Activity> outboundActivities)
-        {
-            try
-            {
-                if (outboundActivities == null)
-                {
-                    throw new ArgumentNullException(nameof(outboundActivities));
-                }
-
-                await ProcessOutboundActivitiesAsync(outboundActivities).ConfigureAwait(false);
                 _logger?.LogInformation("Instagram outbound delivery succeeded ({Count} activity/ies).", outboundActivities.Count);
-            }
-            catch (Exception ex)
-            {
-                // This runs on the relay polling thread — without a real log sink this failure is invisible,
-                // which is exactly how a dead token / Send-API error silently swallowed agent replies before.
-                if (_logger != null)
-                {
-                    _logger.LogError(ex, "Instagram OUTBOUND delivery FAILED — agent reply not delivered to the customer.");
-                }
-                else
-                {
-                    System.Diagnostics.Trace.TraceError($"Instagram outbound delivery failed: {ex}");
-                }
             }
         }
 
