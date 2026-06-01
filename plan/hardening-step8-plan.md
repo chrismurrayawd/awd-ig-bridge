@@ -411,6 +411,44 @@ app settings are deleted once KV is authoritative.
 **Source:** [`docs/2026-05-31-queue-hardening.md`](../docs/2026-05-31-queue-hardening.md) — found during D365 Contact
 Center concurrency testing.
 
+### ✅ INVESTIGATION (2026-06-01) — root cause is **D365 config, NOT bridge code**
+
+A 3-angle investigation workflow (bridge code-path · D365 unified-routing/presence docs · Azure Bot/DL wiring via
+`az`) converged, all three angles agreeing: **the bridge needs no change to honour presence.**
+- **The bridge is a thin transport with zero assignment logic.** Its only D365-facing actions are Direct Line
+  `StartConversationAsync` + `PostActivityAsync` ([`RelayProcessor.cs`](../Microsoft.OmniChannel.MessageRelayProcessor/RelayProcessor.cs#L78)); a repo-wide grep found **no** Dataverse / `msdyn_ocliveworkitem` / `AssignTo` / direct-assignment code. **D365 itself** creates and assigns the conversation once the activity reaches the Azure Bot's messaging endpoint.
+- **The inbound Activity is contract-correct** vs Microsoft's "bring your own channel" reference (`channelId=directline`, `serviceUrl`, `type=message`, `channelData{channeltype, conversationcontext, customercontext}` — [`InstagramHelper.cs:75-93`](../Libraries/Adapters/Microsoft.OmniChannel.Adapters.Instagram/InstagramHelper.cs#L75-L93)). Microsoft's contract has **no** field that selects assign-vs-queue or bypasses presence — that decision is 100% D365-side (workstream binding + routing rules + work distribution).
+- **The Azure Bot / Direct Line is a pure transport** with no routing/assignment knobs (endpoint = the D365 `botchannel/incoming` callback; single default DL site). Ruled out.
+
+**Ranked D365-config hypotheses (for Chris to check — the decisive evidence lives in Dataverse / Copilot Service admin center, which subagents cannot see):**
+1. **★ Agent affinity ("Keep same agent for entire conversation") — most likely.** MS Learn: affinity reassigns a
+   returning/waiting conversation to the same representative *"irrespective of the representative's capacity and
+   presence"*, and it is **enabled by default for social / SMS / persistent-chat / Teams** but is a **per-workstream**
+   toggle. With one agent (`cs@`) handling all IG, any returning IGSID re-affinities to `cs@` regardless of DND → toast.
+   This is the best explanation for "native channels honour presence but the custom IG channel doesn't, with otherwise
+   identical allowed-presence/capacity." → **Compare the AWD Instagram workstream's affinity toggle vs the WhatsApp/
+   FB/web-chat workstreams; if it differs, turn it off (or match the native ones).** Likely a 1-toggle fix.
+2. **Channel↔workstream binding / route-to-queue.** Confirm the IG custom messaging account (Azure Bot app id
+   `6f368e7f-9078-4f3a-b292-d69263731afd`) is actually bound to workstream `ae0c4a33-…` via *Set up Custom*, and that
+   its route-to-queue rules resolve to the **AWD Instagram presence-aware queue** — not a default/fallback messaging
+   queue whose assignment ignores the workstream's presence gating.
+3. **Notification-template / assignment-method** difference on the IG workstream vs the native ones.
+
+**Decisive capture (one test):** enable **Conversation Diagnostics** (App Insights), send an IG DM while `cs@` is on a
+call (DND), and read the routing trace for that conversation — `WorkstreamId`, the Route-to-queue result queue +
+`AllowedPresences`, and the assignment subscenario (`CSRAssignment` = normal queue routing vs an affinity/manual-style
+direct assignment). That single trace separates hypotheses 1–3.
+
+**Secondary flags (note, probably not the cause):** the Azure Bot is registered **SingleTenant** (the custom-channel
+doc says multitenant) — but inbound works, so it didn't break the wiring; worth a glance during any re-validate. And
+the bridge sends `conversationcontext` **empty** — that only steers *which* queue/rep, **not** *whether* presence is
+honoured, so it is **not** the presence fix (an optional future enrichment if D365 routing needs context variables).
+
+**Verdict: do NOT change the bridge for P6. The fix is in D365 — most likely turning off agent affinity on the AWD
+Instagram workstream. Needs Chris (or Playwright) in `org7a63d391.crm11.dynamics.com`.**
+
+---
+
 **BUG (customer-impacting):** when an IG DM arrives while the agent (`cs@alloywheelsdirect.com`) is on a voice call —
 presence = **Busy-DND** (`192360002`, auto-set on a call) — the IG conversation pops an **incoming-conversation toast /
 assignment immediately, interrupting the call.** The native D365 channels (WhatsApp, Facebook, live web chat) correctly
