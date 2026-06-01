@@ -1,6 +1,6 @@
 # Prod-hardening (plan step 8) — phased implementation plan
 
-**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-06-01):** ✅ **P1 + P2 + P3 + P5 DONE & deployed** · **P6 (presence-aware queueing — NEW) + P4 (attachments) remaining.**
+**Source spec:** [`docs/hardening-prompt.md`](../docs/hardening-prompt.md) · **Status (2026-06-01):** ✅ **P1 + P2 + P3 + P5 DONE & deployed** · **P6 (presence-aware queueing) → handed to the D365-config project (it is a D365 setting, not bridge code)** · **P4 (attachments) SCOPED — spec ready, build gated on one live test.**
 **Context:** the bridge is LIVE in production (see [`RESUME.md`](../RESUME.md) → *Current state*). It was built
 dev-grade on purpose; this plan hardens it. Built **P1-first** because P1 has a hard external deadline.
 
@@ -296,9 +296,76 @@ judged) → lock the design → implement → **adversarial review** (concurrenc
 secret handling) like P1 → tests green → then deploy on Chris's go-ahead (forward-slash zip; verify via App
 Insights / `/api/TokenHealth`-style health, since the log stream is dead — see [`RESUME.md`](../RESUME.md) gotchas).
 
-## P4 — Richer attachment / story handling
-- Today inbound media/stories degrade to a text placeholder (`InstagramHelper.DescribeAttachments`). Surface image/story
-  URLs (or media) to the agent per the IG webhook payload shapes. Lower priority.
+## P4 — Richer attachment / story handling  ◀ SCOPED (2026-06-01) — spec below; build gated on one live test
+
+Today inbound media/stories degrade to a terse text placeholder (`[type] url`) via
+`InstagramHelper.DescribeAttachments`, and several shapes are **silently dropped**. P4 makes non-text IG messages
+show up usefully for the agent. **Scoped via a 3-angle workflow; the build is adapter-only (component 2) — no relay
+change** (`RelayProcessorHelper.Validate` already accepts an attachment-only Activity; the DL 3.0.2 SDK `Activity`
+already carries `Attachments`).
+
+### Gap table (current handling → P4 action)
+- **Text** → text Activity. Keep.
+- **image / video / audio / file** → `[type] url` placeholder → label clearly (+ optional `Activity.Attachments`).
+- **share / ig_reel** → `[share|ig_reel] url` → "Shared a post/reel" + link.
+- **story_mention** (`attachments[].type=story_mention`, has `payload.url`) → `[story_mention] url` → "Mentioned you
+  in their story" + link, **distinct from a reply**.
+- **story REPLY** (`message.reply_to.story{url,id}`) → if the reply has text it maps but **the story context is lost**;
+  if no text it is **silently dropped** (`InstagramHelper.cs` `continue` when text empty) → add `reply_to.story`
+  parsing; surface "Replying to your story" + story link alongside the reply text.
+- **reaction** (TOP-LEVEL `reaction{action,reaction,emoji}`, sibling of `message`) → **silently dropped** (no model
+  field; also no `message` so the skip-when-message-null guard drops it) → add model field + the **`message_reactions`
+  webhook subscription** (Meta side); surface "Reacted ❤ to your message" (or decide to ignore).
+- **postback / referral / is_deleted / is_unsupported** → **silently dropped** (no model fields) → decide per shape
+  (likely: referral as context, an optional "[message deleted]" notice).
+- **echo / read / delivery receipts** → correctly skipped. Keep.
+- **Invariant for P4:** never `continue` to *no activity* — always emit at least a labelled notice so the agent isn't blind.
+
+### The two unknowns — must be settled by a LIVE TEST before building (docs cannot)
+1. **What the D365 Copilot rep workspace renders for a CUSTOM (Direct Line) channel, for a HUMAN agent.** Docs say
+   cards/attachments are "supported" but scope card support to the **Webchat** client (not Android) and frame the
+   table "when using AI agents" (AWD is **human-first**); a Microsoft Q&A shows **inbound Direct Line attachments NOT
+   reaching the agent** ("black box", unresolved). **Markdown hyperlink-with-text IS documented "Yes"** → the safe
+   fallback. So `Activity.Attachments` rendering is **unproven** until tested.
+2. **IG media URL openability.** Media arrives as **signed, short-lived `lookaside.fbsbx.com` CDN links** (reports
+   ~minutes–days; a comparable store keeps them 7 days) → an agent clicking later may **403**. Decides pass-through
+   vs bridge re-host (download with the IG token → Azure Blob short-lived SAS; note Meta TOS restricts *storing* media,
+   so favour a short-lived passthrough).
+
+### Decision tree for the outbound Activity shape (resolve from the live test)
+- **(A) If the rep canvas renders inbound `Activity.Attachments{contentType,contentUrl,name}`** → emit attachments
+  (contentType from IG type, contentUrl = media URL, name = a human label) + a short caption Text. If the URL 403s for
+  the agent → re-host the media behind a stable bridge/Blob URL.
+- **(B) Else (likely)** → emit a clean **markdown hyperlink-with-text** line per shape (documented to work):
+  "**Customer sent a photo** — [Open image](url)", "**Reply to your story**: \"<text>\" — [view story](url)",
+  "**Mentioned you in their story** — [view](url)", "**Shared a post** — [open on Instagram](permalink)". Ship (B)
+  first regardless — it degrades gracefully and is materially better than today's `[image] url`.
+
+### Build outline (adapter-only; fresh session)
+1. Extend `InstagramWebhookModel` to PARSE the dropped shapes (`reply_to.story`, top-level `reaction`, `referral`,
+   `postback`, `is_deleted`, `is_unsupported`, attachment `payload.title`) — using the **real captured JSON keys, not
+   guessed**. 2. Replace `DescribeAttachments` with a per-shape labeller (+ optional `Activity.Attachments` per the
+   tree). 3. Enforce the no-silent-drop invariant. 4. (If doing reactions) add the `message_reactions` Meta
+   subscription. 5. Unit tests per shape using the captured JSON as fixtures (no shape is covered today). Outbound stays
+   text-only (out of P4 scope). Keep B1 single-instance.
+
+### Live test & capture protocol (the immediate next step)
+- **Phase 0 (Claude, needs Chris's OK — it is a small prod deploy):** add a TEMPORARY, reversible raw-payload capture —
+  a `LogWarning("IG_RAW_PAYLOAD {Body}", rawBody)` in `InstagramAdapterController.PostActivityAsync` (Warning level so
+  it clears the App Insights Warning+ filter; truncate/PII-aware — the body carries signed media URLs + IGSIDs).
+  Forward-slash zip deploy. **Remove + redeploy after capture.**
+- **Phase 1 (Chris):** from a Tester IG account DMing `@alloywheelsdirect`, **one at a time, ~60–90s apart** (so each
+  isolates to one webhook): (a) photo, (b) video, (c) voice clip, (d) **story reply** (with text), (e) **story
+  mention**, (f) shared post/reel, (g) optional sticker / like-heart / emoji reaction.
+- **Phase 2 (Claude):** pull each real JSON from App Insights (`traces | where message has 'IG_RAW_PAYLOAD' | order by
+  timestamp desc` , `-o json`); record per shape the `attachments[].type`, `payload.url` host + signature/expiry params,
+  and any `reply_to.story` / `reaction` keys; `curl` each `payload.url` → 200 vs 403 (+ re-try ~10 min later for the
+  longevity check). → settles unknown #2 + the exact JSON keys.
+- **Phase 3 (Chris/Lachy):** in the Copilot agent workspace, screenshot what the rep sees for each send (placeholder?
+  clickable link? opens or 403s? inline image?).
+- **Phase 4 (decisive B-probe, Claude + Chris):** temporarily emit one `Activity.Attachments{contentType:image/jpeg,
+  contentUrl:<captured photo URL>, name:"Customer photo"}` for a photo, resend, screenshot whether the rep canvas
+  renders it inline. → settles unknown #1 directly. Then remove the Phase-0/Phase-4 changes + redeploy.
 
 ## P5 — Secret hygiene  ✅ DEPLOYED & VERIFIED in production (2026-06-01)
 
